@@ -107,7 +107,19 @@ for(i in 1698:length(images)){
 
 ```
 
+Using rectangular ranges
+```{r}
 
+recGreenFraction = c()
+for(i in 1898:length(images)){
+  recImgGreenFraction = countcolors::rectangularRange(jpeg::readJPEG(paste0(RL0017Path2020, images[i])), upper = c(0.60, 1, 0.4), lower = c(0, 0.4, 0), color.pixels = FALSE, plotting = FALSE)
+  recIGF = recImgGreenFraction$img.fraction * 100
+  recGreenFraction = append(recGreenFraction, recIGF)
+}
+
+plot(1:401, recGreenFraction, type = "l")
+
+```
 
 
 
