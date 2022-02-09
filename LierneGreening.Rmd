@@ -1,0 +1,151 @@
+---
+title: "LierneGreening"
+author: "Markus Fjellstad Israelsen"
+date: "9 2 2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(EBImage)
+library(countcolors)
+```
+
+Load test images
+```{r}
+
+imagePath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/TestImages/"
+images = list.files(imagePath)
+
+# Save the images as arrays
+i1 = jpeg::readJPEG(paste0(imagePath, images[1]))
+i2 = jpeg::readJPEG(paste0(imagePath, images[2]))
+i3 = jpeg::readJPEG(paste0(imagePath, images[3]))
+i4 = jpeg::readJPEG(paste0(imagePath, images[4]))
+i5 = jpeg::readJPEG(paste0(imagePath, images[5]))
+i6 = jpeg::readJPEG(paste0(imagePath, images[6]))
+i7 = jpeg::readJPEG(paste0(imagePath, images[7]))
+
+```
+
+Plot the image to see the color space
+```{r}
+
+colordistance::plotPixels(paste0(imagePath, images[1]))
+colordistance::plotPixels(paste0(imagePath, images[2]))
+colordistance::plotPixels(paste0(imagePath, images[3]))
+colordistance::plotPixels(paste0(imagePath, images[4]))
+colordistance::plotPixels(paste0(imagePath, images[5]))
+colordistance::plotPixels(paste0(imagePath, images[6]))
+colordistance::plotPixels(paste0(imagePath, images[7]))
+
+```
+
+Counting the pixels
+```{r}
+
+i1.spherical = countcolors::sphericalRange(i1, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i2.spherical = countcolors::sphericalRange(i2, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i3.spherical = countcolors::sphericalRange(i3, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i4.spherical = countcolors::sphericalRange(i4, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i5.spherical = countcolors::sphericalRange(i5, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i6.spherical = countcolors::sphericalRange(i6, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+i7.spherical = countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
+
+
+# Check if we have to increase/decrease the radius
+countcolors::changePixelColor(i7, i7.spherical$pixel.idx, target.color = "magenta")
+
+# Should change the radius to 12%
+countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 12, color.pixels = FALSE, plotting = TRUE, target.color = "magenta")
+
+# Change the radius to 12%
+i1.sph = countcolors::sphericalRange(i1, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i2.sph = countcolors::sphericalRange(i2, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i3.sph = countcolors::sphericalRange(i3, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i4.sph = countcolors::sphericalRange(i4, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i5.sph = countcolors::sphericalRange(i5, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i6.sph = countcolors::sphericalRange(i6, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+i7.sph = countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+
+# Extract the percentage covarage of green
+i1.sph$img.fraction * 100
+i2.sph$img.fraction * 100
+i3.sph$img.fraction * 100
+i4.sph$img.fraction * 100
+i5.sph$img.fraction * 100
+i6.sph$img.fraction * 100
+i7.sph$img.fraction * 100
+
+```
+
+Create the function to run through all the images
+```{r}
+
+RL0017Path2020 = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/TestImages/"
+images = list.files(RL0017Path2020)
+
+greenFraction = c()
+for(i in 1698:length(images)){
+  imgGreenFraction = countcolors::sphericalRange(jpeg::readJPEG(paste0(RL0017Path2020, images[i])), center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
+  igf = imgGreenFraction$img.fraction * 100
+  greenFraction = append(greenFraction, igf)
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
