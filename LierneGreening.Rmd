@@ -7,43 +7,27 @@ editor_options:
   chunk_output_type: console
 ---
 
+To do list:
+  1. Remove all the images that are not during the day. We could probably only include images taken between 11:00 -     15:00 to make sure we only use images with enough light and it takes a "long" time for a change in "greenness" to     occur. 
+
 ```{r}
+
 library(EBImage)
 library(countcolors)
+
 ```
 
 Load test images
-```{r}
+```{r, echo = TRUE, eval = TRUE}
 
 imagePath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/TestImages/"
 images = list.files(imagePath)
-
-# Save the images as arrays
-i1 = jpeg::readJPEG(paste0(imagePath, images[1]))
-i2 = jpeg::readJPEG(paste0(imagePath, images[2]))
-i3 = jpeg::readJPEG(paste0(imagePath, images[3]))
-i4 = jpeg::readJPEG(paste0(imagePath, images[4]))
-i5 = jpeg::readJPEG(paste0(imagePath, images[5]))
-i6 = jpeg::readJPEG(paste0(imagePath, images[6]))
-i7 = jpeg::readJPEG(paste0(imagePath, images[7]))
+colordistance::plotPixels(paste0(imagePath, images[2000]))
 
 ```
 
-Plot the image to see the color space
-```{r}
-
-colordistance::plotPixels(paste0(imagePath, images[1]))
-colordistance::plotPixels(paste0(imagePath, images[2]))
-colordistance::plotPixels(paste0(imagePath, images[3]))
-colordistance::plotPixels(paste0(imagePath, images[4]))
-colordistance::plotPixels(paste0(imagePath, images[5]))
-colordistance::plotPixels(paste0(imagePath, images[6]))
-colordistance::plotPixels(paste0(imagePath, images[7]))
-
-```
-
-Counting the pixels
-```{r}
+Counting the pixels using a spherical range. Pick a mid green color and include all colors in a radius from that color. 
+```{r, echo = TRUE, eval = TRUE}
 
 i1.spherical = countcolors::sphericalRange(i1, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
 
@@ -61,7 +45,7 @@ i7.spherical = countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), rad
 
 
 # Check if we have to increase/decrease the radius
-countcolors::changePixelColor(i7, i7.spherical$pixel.idx, target.color = "magenta")
+#countcolors::changePixelColor(i7, i7.spherical$pixel.idx, target.color = "magenta")
 
 # Should change the radius to 12%
 countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 12, color.pixels = FALSE, plotting = TRUE, target.color = "magenta")
@@ -93,7 +77,7 @@ i7.sph$img.fraction * 100
 ```
 
 Create the function to run through all the images
-```{r}
+```{r, echo = TRUE, eval = FALSE}
 
 RL0017Path2020 = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/TestImages/"
 images = list.files(RL0017Path2020)
@@ -107,9 +91,13 @@ for(i in 1698:length(images)){
 
 ```
 
-Using rectangular ranges
-```{r}
+Using rectangular ranges instead of spherical ranges. Set a range of RGB values that will be included (seems to work really well)
+```{r, echo = TRUE, eval = FALSE}
 
+# Display an image, showing all the green pixels with a magenta color (Have to crop the bottom so that the Reconyx logo is not included)
+countcolors::rectangularRange(jpeg::readJPEG(paste0(RL0017Path2020, images[2198])), upper = c(0.60, 1, 0.4), lower = c(0, 0.4, 0), target.color = "magenta")
+
+# For loop that extracts the fraction of green in each image
 recGreenFraction = c()
 for(i in 1898:length(images)){
   recImgGreenFraction = countcolors::rectangularRange(jpeg::readJPEG(paste0(RL0017Path2020, images[i])), upper = c(0.60, 1, 0.4), lower = c(0, 0.4, 0), color.pixels = FALSE, plotting = FALSE)
@@ -120,8 +108,6 @@ for(i in 1898:length(images)){
 plot(1:401, recGreenFraction, type = "l")
 
 ```
-
-
 
 
 
