@@ -7,9 +7,7 @@ editor_options:
   chunk_output_type: console
 ---
 
-To do list:
-  1. Remove all the images that are not during the day. We could probably only include images taken between 11:00 -     15:00 to make sure we only use images with enough light and it takes a "long" time for a change in "greenness" to     occur. 
-
+Load library
 ```{r}
 
 library(EBImage)
@@ -23,8 +21,8 @@ library(readxl)
 
 ```
 
-Load test images
-```{r, echo = TRUE, eval = TRUE}
+Set up Green Fraction function
+```{r Green Fraction function, echo = TRUE, eval = TRUE}
 
 # YearlyFolderDir = "P:/12179000_lirypetelemetri_i_lierne/ImagesGreenFraction/"
 GreenFraction = function(YearlyFolderDir){
@@ -88,121 +86,30 @@ GreenFraction = function(YearlyFolderDir){
 ```
 
 Run the Greening Fraction Function
-```{r}
+```{r Run GF function, echo = TRUE, eval = FALSE}
 
 # Supply the function with the directory path where the yearly greening images are stored (Kamerabilder 2019, Kamerabilder 2020..)
 GreenFraction(YearlyFolderDir = "P:/12179000_lirypetelemetri_i_lierne/ImagesGreenFraction/")
 
+```
+
+Import all the green fraction datasets and join them
+```{r Import DF, echo = TRUE, eval = FALSE}
+
+outputPath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/"
+
+greenFractionFiles = list.files(outputPath, pattern = "\\.xlsx$")
+greenFractionList = lapply(paste0(outputPath, greenFractionFiles), read_excel)
+greenFractionDF = bind_rows(greenFractionList, .id = "id")
 
 ```
 
-
-Counting the pixels using a spherical range. Pick a mid green color and include all colors in a radius from that color. 
-```{r, echo = TRUE, eval = TRUE}
-
-i1.spherical = countcolors::sphericalRange(i1, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i2.spherical = countcolors::sphericalRange(i2, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i3.spherical = countcolors::sphericalRange(i3, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i4.spherical = countcolors::sphericalRange(i4, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i5.spherical = countcolors::sphericalRange(i5, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i6.spherical = countcolors::sphericalRange(i6, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-i7.spherical = countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 0.10, color.pixels = FALSE, plotting = FALSE)
-
-
-# Check if we have to increase/decrease the radius
-#countcolors::changePixelColor(i7, i7.spherical$pixel.idx, target.color = "magenta")
-
-# Should change the radius to 12%
-countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 12, color.pixels = FALSE, plotting = TRUE, target.color = "magenta")
-
-# Change the radius to 12%
-i1.sph = countcolors::sphericalRange(i1, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i2.sph = countcolors::sphericalRange(i2, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i3.sph = countcolors::sphericalRange(i3, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i4.sph = countcolors::sphericalRange(i4, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i5.sph = countcolors::sphericalRange(i5, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i6.sph = countcolors::sphericalRange(i6, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-i7.sph = countcolors::sphericalRange(i7, center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-
-# Extract the percentage covarage of green
-i1.sph$img.fraction * 100
-i2.sph$img.fraction * 100
-i3.sph$img.fraction * 100
-i4.sph$img.fraction * 100
-i5.sph$img.fraction * 100
-i6.sph$img.fraction * 100
-i7.sph$img.fraction * 100
-
-```
-
-Run through all the images using spherical ranges.
+Plot some of the results
 ```{r, echo = TRUE, eval = FALSE}
-
-RL0017Path2020 = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/TestImages/"
-
-greenFraction = c()
-for(i in 1:length(imgDay)){
-  imgGreenFraction = countcolors::sphericalRange(jpeg::readJPEG(paste0(RL0017Path2020, imgDay[i])), center = c(0.38, 0.55, 0.17), radius = 0.12, color.pixels = FALSE, plotting = FALSE)
-  igf = imgGreenFraction$img.fraction * 100
-  greenFraction = append(greenFraction, igf)
-}
-
-```
-
-Run through all the images Using rectangular ranges instead of spherical ranges. Set a range of RGB values that will be included (seems to work really well).
-```{r, echo = TRUE, eval = FALSE}
-
-imgDayDFmed = imgDayDF %>% group_by(Date) %>% summarise(DailyGreenFraction = median(GreenFraction, na.rm = TRUE))
-
-imgDayDFmax = imgDayDF %>% group_by(Date) %>% summarise(DailyGreenFraction = max(GreenFraction, na.rm = TRUE))
-
-imgDayAll = imgDayDFmed %>% mutate(dGreenFracMean = imgDayDFmean$DailyGreenFraction, dGreenFracMax = imgDayDFmax$DailyGreenFraction) %>% rename(dGreenFracMed = DailyGreenFraction)
-
 
 # Plot some of the results
-ggplot(data = imgDayDFmed, aes(x = Date, y = DailyGreenFraction, group = 1)) + geom_line(color = "dark green", size = 1.1) + labs(x = "Date", y = "Fraction of 'green' pixels (%)")
-
-ggplot(data = imgDayDFmean, aes(x = Date, y = DailyGreenFraction, group = 1)) + geom_line(color = "dark green", size = 1.1) + labs(x = "Date", y = "Mean Fraction of 'Green' Pixels (%)")
-
-ggplot(data = imgDayDFmax, aes(x = Date, y = DailyGreenFraction, group = 1)) + geom_line(color = "dark green", size = 1.1) + labs(x = "Date", y = "Fraction of 'green' pixels (%)")
-
-
-ggplot(data = imgDayAll, aes(x = Date)) + 
-  geom_line(aes(y = dGreenFracMean), color = "dark green", size = 1.1) +
-  geom_line(aes(y = dGreenFracMed), color = "steelblue", size = 1.1) +
-  geom_line(aes(y = dGreenFracMax), color = "maroon", size = 1.1) +
-  labs(x = "Date", y = "Fraction of 'green' pixels (%)")
-
-rl0017_2020 = read_xlsx("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/RypeLierne0017_2020_All.xlsx")
-
-rl0017_2020 = rl0017_2020 %>% mutate(Year = 2020)
-imgDayAll = imgDayAll %>% mutate(Year = 2021)
-
-imgDayBoth = rbind(rl0017_2020, imgDayAll)
-imgDayBoth = imgDayBoth %>% mutate(yearDay = yday(Date))
-imgDayBoth$Year = as.character(imgDayBoth$Year)
-
-ggplot(data = imgDayBoth, aes(x = yearDay, y = dGreenFracMean)) + 
-  geom_line(aes(color = Year, linetype = Year))+
-  scale_color_manual(values = c("darkred", "steelblue"))+
-  labs(x = "Year Day", y = "Fraction of 'green' pixels (%)")+
-  ggtitle("RypeLierne0017")
 
 ```
-
-
 
 
 
