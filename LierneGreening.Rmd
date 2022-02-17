@@ -1,16 +1,15 @@
 ---
 title: "LierneGreening"
 author: "Markus Fjellstad Israelsen"
-date: "9 2 2022"
+date: "09.02.2022"
 output: html_document
 editor_options: 
   chunk_output_type: console
 ---
 
 Load library
-```{r}
+```{r Load Library}
 
-library(EBImage)
 library(countcolors)
 library(camtrapR)
 library(lubridate)
@@ -35,29 +34,37 @@ GreenFraction = function(YearlyFolderDir){
   yearFoldersLength = list.files(yearFoldersPath)
   
   # For loop over the years
-  for(i in 1:length(yearFoldersLength)){
+  for(i in 1:1){#length(yearFoldersLength)){
     memCardFolders = list.files(paste0(yearFoldersPath, yearFoldersLength[i]))
     
     # For loop over the memory cards in each year
-    for(j in 1:length(memCardFolders)){
+    for(j in 1:2){#length(memCardFolders)){
       images = list.files(paste0(yearFoldersPath, yearFoldersLength[i], "/", memCardFolders[j]))
+      images.db = which(images == "Thumbs.db")
+      if(length(images.db) > 0){
+        images = images[-images.db]
+      }
       imagePath = paste0(yearFoldersPath, yearFoldersLength[i], "/", memCardFolders[j])
       MemCard = substring(imagePath, 76, nchar(imagePath))
       
       # For loop over each image, in each memory card, in each year
       imgDay = c()
-      imgDayDF = data.frame("Date" = c(ymd("1970-01-01")), "Time" = "09:00:00", GreenFraction = c(NA))
-      for (k in 1:length(images)){
-        imgDateTime = exifTagNames(inDir = imagePath, 1, images[k])[5, 3]
-        Date = substring(imgDateTime, 1, 10)
+      imgDayDF = data.frame("Date" = c(ymd("1970-01-01")), "Time" = "09:00:00", GreenFraction = c(NA), periodTempC = NA)
+      tempDF = data.frame("Date" = c(ymd("1970-01-01")), "Time" = "09:00:00", tempC = NA)
+      for (k in 1:20){#length(images)){
+        imgInfo = exifTagNames(inDir = imagePath, 1, images[k])
+        imgDateTime = imgInfo[5, 3]
+        Date = ymd(substring(imgDateTime, 1, 10))
         sTime = substring(imgDateTime, 20, 22) # correcting for summer time
         aTime = substring(imgDateTime, 12, 19)
         nTime = paste0(as.numeric(substring(aTime, 1, 2))+as.numeric(sTime), substring(aTime, 3, 8))
         Time = ifelse(nchar(nTime) == 7, paste0("0",as.numeric(substring(aTime, 1, 2))+as.numeric(sTime), substring(aTime, 3, 8)), nTime)
+        tempC = as.numeric(substring(imgInfo[50, 3], 1, 2)) # Degrees centigrade
+        tempDF[k, ] = c(as.character(Date), Time, tempC)
         
         if(Time > "06:00:00" & Time < "18:00:00"){
           imgDay = append(imgDay, images[k])
-          imgDayDF = rbind(imgDayDF, c(as.character(ymd(Date)), Time, NA))
+          imgDayDF = rbind(imgDayDF, c(as.character(ymd(Date)), Time, NA, as.numeric(tempC)))
         }
       }
       imgDayDF = imgDayDF[-1, ]
@@ -73,12 +80,32 @@ GreenFraction = function(YearlyFolderDir){
       imgDayDF = imgDayDF[grep(":00:00", imgDayDF$Time), ] 
       imgDayDF$GreenFraction = as.numeric(imgDayDF$GreenFraction)
       
+      # Get the mean temperature for each day
+      tempDF$tempC = as.numeric(tempDF$tempC)
+      tempDF = tempDF[grep(":00:00", tempDF$Time), ]
+      tempDfMean = tempDF %>% group_by(Date) %>% summarise(meanTempC = mean(tempC, na.rm = TRUE), minTempC = min(tempC, na.rm = TRUE), maxTempC = max(tempC, na.rm = TRUE), medianTempC = median(tempC, na.rm = TRUE))
+      tempDfMean = tempDfMean %>% dplyr::select(Date, meanTempC, medianTempC, minTempC, maxTempC)
+      tempDfMean$Date = as.Date(tempDfMean$Date)
+      
       # Take the mean of the green fraction for each day
-      imgDayDfMean = imgDayDF %>% group_by(Date) %>% summarise(DailyGreenFraction = mean(GreenFraction, na.rm = TRUE))
+      imgDayDfMean = imgDayDF %>% group_by(Date) %>% summarise(meanGreenFraction = mean(GreenFraction, na.rm = TRUE), maxGreenFraction = max(GreenFraction, na.rm = TRUE), meanPeriodTempC = mean(as.numeric(periodTempC), na.rm = TRUE), medianPeriodTempC = median(as.numeric(periodTempC), na.rm = TRUE), minPeriodTempC = min(as.numeric(periodTempC), na.rm = TRUE), maxPeriodTempC = max(as.numeric(periodTempC), na.rm = TRUE))
+      imgDayDfMean$Date = as.Date(imgDayDfMean$Date)
+      imgDayDfMean = left_join(imgDayDfMean, tempDfMean, by = "Date")
       imgDayDfMean = imgDayDfMean %>% mutate(MemCard = MemCard)
       
-      # Export excel tables
-      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyMean_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
+      # Take the max of the green fraction for each day
+      # imgDayDfMax = imgDayDF %>% group_by(Date) %>% summarise(MaxGreenFraction = max(GreenFraction, na.rm = TRUE), meanPeriodTempC = mean(as.numeric(periodTempC), na.rm = TRUE), medianPeriodTempC = median(as.numeric(periodTempC), na.rm = TRUE), minPeriodTempC = min(as.numeric(periodTempC), na.rm = TRUE), maxPeriodTempC = max(as.numeric(periodTempC), na.rm = TRUE))
+      # imgDayDfMax$Date = as.Date(imgDayDfMax$Date)
+      # imgDayDfMax = left_join(imgDayDfMax, tempDfMean, by = "Date")
+      # imgDayDfMax = imgDayDfMax %>% mutate(MemCard = MemCard)
+      # 
+      
+      ## Export excel tables
+      # Mean
+      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyGreen_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
+      
+      # Max
+      # write_xlsx(imgDayDfMax, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyMax_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
     }
   }
 }
@@ -89,7 +116,11 @@ Run the Greening Fraction Function
 ```{r Run GF function, echo = TRUE, eval = FALSE}
 
 # Supply the function with the directory path where the yearly greening images are stored (Kamerabilder 2019, Kamerabilder 2020..)
+s = Sys.time()
 GreenFraction(YearlyFolderDir = "P:/12179000_lirypetelemetri_i_lierne/ImagesGreenFraction/")
+e = Sys.time()
+runTime = e - s
+runTime
 
 ```
 
@@ -100,14 +131,15 @@ outputPath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/Li
 
 greenFractionFiles = list.files(outputPath, pattern = "\\.xlsx$")
 greenFractionList = lapply(paste0(outputPath, greenFractionFiles), read_excel)
-greenFractionDF = bind_rows(greenFractionList, .id = "id")
+greenFractionDF = bind_rows(greenFractionList) %>% mutate(YearDay = yday(Date))
 
 ```
 
 Plot some of the results
-```{r, echo = TRUE, eval = FALSE}
+```{r Plot results, echo = TRUE, eval = FALSE}
 
 # Plot some of the results
+ggplot(data = greenFractionDF, aes(x = YearDay, y = DailyGreenFraction, group = MemCard)) + geom_line() + scale_color_manual()
 
 ```
 
