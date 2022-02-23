@@ -17,6 +17,7 @@ library(ggplot2)
 library(dplyr)
 library(writexl)
 library(readxl)
+library(gridExtra)
 
 ```
 
@@ -34,11 +35,11 @@ GreenFraction = function(YearlyFolderDir){
   yearFoldersLength = list.files(yearFoldersPath)
   
   # For loop over the years
-  for(i in 1:1){#length(yearFoldersLength)){
+  for(i in 1:length(yearFoldersLength)){
     memCardFolders = list.files(paste0(yearFoldersPath, yearFoldersLength[i]))
     
     # For loop over the memory cards in each year
-    for(j in 1:2){#length(memCardFolders)){
+    for(j in 1:length(memCardFolders)){
       images = list.files(paste0(yearFoldersPath, yearFoldersLength[i], "/", memCardFolders[j]))
       images.db = which(images == "Thumbs.db")
       if(length(images.db) > 0){
@@ -51,9 +52,9 @@ GreenFraction = function(YearlyFolderDir){
       imgDay = c()
       imgDayDF = data.frame("Date" = c(ymd("1970-01-01")), "Time" = "09:00:00", GreenFraction = c(NA), periodTempC = NA)
       tempDF = data.frame("Date" = c(ymd("1970-01-01")), "Time" = "09:00:00", tempC = NA)
-      for (k in 1:20){#length(images)){
-        imgInfo = exifTagNames(inDir = imagePath, 1, images[k])
-        imgDateTime = imgInfo[5, 3]
+      for (k in 1:length(images)){
+        imgInfo = exifTagNames(inDir = imagePath, 1, images[k]) # extract image info
+        imgDateTime = imgInfo[5, 3] # date and time
         Date = ymd(substring(imgDateTime, 1, 10))
         sTime = substring(imgDateTime, 20, 22) # correcting for summer time
         aTime = substring(imgDateTime, 12, 19)
@@ -62,6 +63,7 @@ GreenFraction = function(YearlyFolderDir){
         tempC = as.numeric(substring(imgInfo[50, 3], 1, 2)) # Degrees centigrade
         tempDF[k, ] = c(as.character(Date), Time, tempC)
         
+        # Filter out images in the time period of interest
         if(Time > "06:00:00" & Time < "18:00:00"){
           imgDay = append(imgDay, images[k])
           imgDayDF = rbind(imgDayDF, c(as.character(ymd(Date)), Time, NA, as.numeric(tempC)))
@@ -80,32 +82,22 @@ GreenFraction = function(YearlyFolderDir){
       imgDayDF = imgDayDF[grep(":00:00", imgDayDF$Time), ] 
       imgDayDF$GreenFraction = as.numeric(imgDayDF$GreenFraction)
       
-      # Get the mean temperature for each day
+      # Get the mean/median/min/max temperature for each image
       tempDF$tempC = as.numeric(tempDF$tempC)
       tempDF = tempDF[grep(":00:00", tempDF$Time), ]
       tempDfMean = tempDF %>% group_by(Date) %>% summarise(meanTempC = mean(tempC, na.rm = TRUE), minTempC = min(tempC, na.rm = TRUE), maxTempC = max(tempC, na.rm = TRUE), medianTempC = median(tempC, na.rm = TRUE))
       tempDfMean = tempDfMean %>% dplyr::select(Date, meanTempC, medianTempC, minTempC, maxTempC)
       tempDfMean$Date = as.Date(tempDfMean$Date)
       
-      # Take the mean of the green fraction for each day
+      # Take the mean/median/min/max of the green fraction for each day
       imgDayDfMean = imgDayDF %>% group_by(Date) %>% summarise(meanGreenFraction = mean(GreenFraction, na.rm = TRUE), maxGreenFraction = max(GreenFraction, na.rm = TRUE), meanPeriodTempC = mean(as.numeric(periodTempC), na.rm = TRUE), medianPeriodTempC = median(as.numeric(periodTempC), na.rm = TRUE), minPeriodTempC = min(as.numeric(periodTempC), na.rm = TRUE), maxPeriodTempC = max(as.numeric(periodTempC), na.rm = TRUE))
       imgDayDfMean$Date = as.Date(imgDayDfMean$Date)
       imgDayDfMean = left_join(imgDayDfMean, tempDfMean, by = "Date")
       imgDayDfMean = imgDayDfMean %>% mutate(MemCard = MemCard)
       
-      # Take the max of the green fraction for each day
-      # imgDayDfMax = imgDayDF %>% group_by(Date) %>% summarise(MaxGreenFraction = max(GreenFraction, na.rm = TRUE), meanPeriodTempC = mean(as.numeric(periodTempC), na.rm = TRUE), medianPeriodTempC = median(as.numeric(periodTempC), na.rm = TRUE), minPeriodTempC = min(as.numeric(periodTempC), na.rm = TRUE), maxPeriodTempC = max(as.numeric(periodTempC), na.rm = TRUE))
-      # imgDayDfMax$Date = as.Date(imgDayDfMax$Date)
-      # imgDayDfMax = left_join(imgDayDfMax, tempDfMean, by = "Date")
-      # imgDayDfMax = imgDayDfMax %>% mutate(MemCard = MemCard)
-      # 
-      
       ## Export excel tables
-      # Mean
       write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyGreen_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
       
-      # Max
-      # write_xlsx(imgDayDfMax, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyMax_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
     }
   }
 }
@@ -131,16 +123,102 @@ outputPath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/Li
 
 greenFractionFiles = list.files(outputPath, pattern = "\\.xlsx$")
 greenFractionList = lapply(paste0(outputPath, greenFractionFiles), read_excel)
-greenFractionDF = bind_rows(greenFractionList) %>% mutate(YearDay = yday(Date))
+greenFractionDF = bind_rows(greenFractionList) %>% mutate(YearDay = yday(Date), year = year(Date), monthNum = month(Date), month = month.abb[monthNum], day = day(Date))
+
+# Remove all images after 25th of June
+#greenFractionDF = greenFractionDF %>% filter(YearDay <= 176)
+
+write_xlsx(greenFractionDF, "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/dailyGreenPixels.xlsx")
 
 ```
 
-Plot some of the results
-```{r Plot results, echo = TRUE, eval = FALSE}
+Check if it is best to use mean green fraction or max green fraction
+```{r}
 
-# Plot some of the results
-ggplot(data = greenFractionDF, aes(x = YearDay, y = DailyGreenFraction, group = MemCard)) + geom_line() + scale_color_manual()
+rl0019 = greenFractionDF %>% filter(year(Date) == 2021, MemCard == "RypeLierne0019")
+ggplot(data = rl0019, aes(x = YearDay)) + geom_line(aes(y = meanGreenFraction), color = "magenta") + geom_line(aes(y = maxGreenFraction))
 
+rl0017 = greenFractionDF %>% filter(year(Date) == 2021, MemCard == "RypeLierne0017")
+ggplot(data = rl0017, aes(x = YearDay)) + geom_line(aes(y = meanGreenFraction), color = "magenta") + geom_line(aes(y = maxGreenFraction))
+
+rl0013 = greenFractionDF %>% filter(year(Date) == 2021, MemCard == "RypeLierne0013")
+ggplot(data = rl0013, aes(x = YearDay)) + geom_line(aes(y = meanGreenFraction), color = "magenta") + geom_line(aes(y = maxGreenFraction))
+
+```
+As expected the green fraction values are a bit higher with the "max green fraction", however, the start of the spring season and the trend/pattern of greening remains the same between the two methods. Using the mean green fraction from now then. 
+
+
+Rl0009 over three years
+```{r}
+rl0009 = greenFractionDF %>% filter(MemCard == "RypeLierne0009")
+rl0009.plot = ggplot(data = rl0009, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0009",color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0011 over three years
+```{r}
+rl0011 = greenFractionDF %>% filter(MemCard == "RypeLierne0011")
+rl0011.plot = ggplot(data = rl0011, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0011", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0013 over three years
+```{r}
+rl0013 = greenFractionDF %>% filter(MemCard == "RypeLierne0013")
+rl0013.plot = ggplot(data = rl0013, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0013", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0015 over three years
+```{r}
+rl0015 = greenFractionDF %>% filter(MemCard == "RypeLierne0015")
+rl0015.plot = ggplot(data = rl0015, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0015", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0017 over three years
+```{r}
+
+rl0017 = greenFractionDF %>% filter(MemCard == "RypeLierne0017")
+rl0017.plot = ggplot(data = rl0017, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0017", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0019 over three years
+```{r}
+
+rl0019 = greenFractionDF %>% filter(MemCard == "RypeLierne0019")
+rl0019.plot = ggplot(data = rl0019, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title = "RypeLierne0019", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Rl0021 over three years
+```{r}
+
+rl0021 = greenFractionDF %>% filter(MemCard == "RypeLierne0021")
+rl0021.plot = ggplot(data = rl0021, aes(x = YearDay, y = meanGreenFraction, group = as.factor(year), color = as.factor(year))) + geom_line() + scale_color_manual(values=c("magenta", "steelblue", "dark green")) + labs(title="RypeLierne0021", color = "Year", x = "Year day", y = "Daily mean of 'green pixel' fraction (%)")
+
+```
+
+Grid plot
+```{r}
+
+grid.arrange(rl0009.plot, rl0011.plot, rl0013.plot, rl0015.plot, rl0017.plot, rl0019.plot, rl0021.plot, nrow = 4, ncol = 2)
+
+```
+
+
+
+Mean of all sites 
+```{r}
+
+meanGreenFrac = greenFractionDF %>% group_by(YearDay, year) %>% summarise(meanSiteGreenFraction = mean(meanGreenFraction))
+meanGreenFrac = arrange(meanGreenFrac, by= year)
+meanGreenFrac$year = as.factor(meanGreenFrac$year)
+
+ggplot(meanGreenFrac, aes(x = YearDay, y = meanSiteGreenFraction, group = year, color = year))+ geom_line()  + labs(color = "Year", x = "Year day", y = "Site mean 'green' fraction (%)") + geom_ribbon(aes(xmin = 60, xmax = 90, fill = "Mar", y = meanSiteGreenFraction), alpha = 0.10) + geom_ribbon(aes(xmin=90, xmax=120, fill = "Apr"), alpha = 0.10) + geom_ribbon(aes(xmin = 120, xmax = 151), alpha = 0.10, fill = "pink") + geom_ribbon(aes(xmin = 151, xmax = 181), alpha = 0.1)
+
+#+ scale_color_manual(values=c("magenta", "steelblue", "dark green"))
 ```
 
 
