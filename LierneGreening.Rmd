@@ -24,7 +24,7 @@ library(viridis)
 
 ```
 
-Set up Green Fraction function
+Set up Green Fraction function for spring
 ```{r Green Fraction function, echo = TRUE, eval = TRUE}
 
 GreenFraction = function(YearlyFolderDir){
@@ -98,7 +98,7 @@ GreenFraction = function(YearlyFolderDir){
       imgDayDfMean = imgDayDfMean %>% mutate(MemCard = MemCard)
       
       ## Export excel tables
-      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyGreen_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
+      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/", "dailyGreen_", substring(yearFoldersLength[i], 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
     }
   }
 }
@@ -178,14 +178,13 @@ GreenFractionLast = function(YearlyFolderDir){
       imgDayDfMean = imgDayDfMean %>% mutate(MemCard = MemCard)
       
       ## Export excel tables
-      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/", "dailyGreen_", substring(max(yearFoldersLength), 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
+      write_xlsx(imgDayDfMean, paste0("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/", "dailyGreen_", substring(max(yearFoldersLength), 14, 17), "_", substring(imagePath, 76, 89), ".xlsx"))
   }
 }
 
 ```
 
-
-Run the Greening Fraction Function
+Run the Greening Fraction Function for spring
 ```{r Run GF function, echo = TRUE, eval = FALSE}
 
 # Supply the function with the directory path where the yearly greening images are stored (Kamerabilder 2019, Kamerabilder 2020..)
@@ -207,7 +206,7 @@ runTime
 Import all the green fraction datasets and join them
 ```{r Import DF, echo = TRUE, eval = FALSE}
 
-outputPath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/"
+outputPath = "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/"
 
 greenFractionFiles = list.files(outputPath, pattern = "\\.xlsx$")
 greenFractionList = lapply(paste0(outputPath, greenFractionFiles), read_excel)
@@ -216,7 +215,7 @@ greenFractionDF = bind_rows(greenFractionList) %>% mutate(YearDay = yday(Date), 
 # Remove all images after 25th of June
 greenFractionDF = greenFractionDF %>% filter(YearDay <= 176)
 
-write_xlsx(greenFractionDF, "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/RmAfter25June/dailyGreenPixels.xlsx")
+write_xlsx(greenFractionDF, "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/RmAfter25June/dailyGreenPixels.xlsx")
 
 ```
 
@@ -256,14 +255,13 @@ rl0009.plot = ggplot(data = rl0009, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0009.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ1_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ1_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 2 - Rl0017
 ```{r}
@@ -285,14 +283,13 @@ rl0017.plot = ggplot(data = rl0017, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0017.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ2_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ2_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 3 - Rl0013
 ```{r}
@@ -313,14 +310,13 @@ rl0013.plot = ggplot(data = rl0013, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0013.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ3_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ3_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 4 - Rl0011
 ```{r}
@@ -341,14 +337,13 @@ rl0011.plot = ggplot(data = rl0011, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0011.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ4_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ4_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 5 - Rl0015
 ```{r}
@@ -369,14 +364,13 @@ rl0015.plot = ggplot(data = rl0015, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0015.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ5_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ5_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 6 - Rl0021
 ```{r}
@@ -398,15 +392,14 @@ rl0021.plot = ggplot(data = rl0021, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 
 rl0021.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ6_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ6_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Sampling quadrat 7 - Rl0019
 ```{r}
@@ -428,14 +421,13 @@ rl0019.plot = ggplot(data = rl0019, aes(x = YearDay, y = meanGreenFraction, grou
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 rl0019.plot
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/SQ7_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/SQ7_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
-
 
 Grid plot
 ```{r}
@@ -443,7 +435,6 @@ Grid plot
 #grid.arrange(rl0009.plot, rl0017.plot, rl0013.plot, rl0011.plot, rl0015.plot, rl0021.plot, rl0019.plot,  nrow = 4, ncol = 2)
 
 ```
-
 
 
 Mean of all sites 
@@ -473,11 +464,11 @@ ggplot(data = meanGreenFrac, aes(x = YearDay, y = meanSiteGreenFraction, group =
       panel.background = element_rect(fill = "white", colour = "white"),
       panel.grid.major = element_line(size = 0.5, linetype = "solid", colour = "#e6e6e6")
     ) +
-    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E")) + 
+    scale_color_manual(values = c("#ffb25b", "#2dccd3", "#004f71", "#93328E", "#7A9A01")) + 
     scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
     scale_x_continuous(labels = c("Mar", "Apr", "Mai", "Jun", "Jul"))
 
-ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/LierneGreening/LierneGreening/Output/Mean_SQ1-7_2022.png", width=23, height=17, units="cm", dpi=600)
+ggsave("C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Greening output/Mean_SQ1-7_2023.png", width=23, height=17, units="cm", dpi=600)
 
 ```
 
