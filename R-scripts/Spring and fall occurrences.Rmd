@@ -1,0 +1,142 @@
+---
+title: "Spring & Fall Occurrences"
+author: "Markus Fjellstad Israelsen"
+date: "2023-08-31"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+Load Library
+```{r}
+
+library(shiny)
+library(odbc)
+library(editData)
+library(tidyverse)
+library(RSQLite)
+library(uuid)
+library(lubridate)
+library(readxl)
+library(writexl)
+library(DataEditR)
+library(tidyquant)
+
+```
+
+```{r}
+
+# Set working directory
+setwd("P:/12179000_lirypetelemetri_i_lierne/DATA Lierne/Database")
+
+# Connecting to data base, and reading 
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="Lierne_WP_Project_Data_ReSt.db")
+Occ <- as_tibble(dbReadTable(con, "Marked_Occurences"))
+dbDisconnect(con) 
+
+```
+
+
+```{r}
+
+# Filter the dataset
+occ = Occ %>% filter(!is.na(UTM_X) & Status == 2)
+occ = occ %>% mutate(Date = dmy(Date), Month = month(Date))
+
+movement = occ %>% filter(Month == 5 | Month == 8)
+movementFilter = movement %>% group_by(RingNR, Year) %>% summarise(sumMonth = sum(Month))
+movementFilter = movementFilter %>% filter(sumMonth >= 13)
+
+movement = left_join(movement, movementFilter, by = c("RingNR", "Year"))
+movement = movement %>% filter(!is.na(sumMonth))
+movement = movement %>% mutate(IDcol = RingNR+Year)
+
+write_xlsx(movement, "C:/Users/markus.israelsen/OneDrive - NINA/GitHub/Willow ptarmigan project/GreeningProject/LierneGreening/Spring and fall output/movement.xlsx")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

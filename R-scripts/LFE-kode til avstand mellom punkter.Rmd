@@ -1,0 +1,1411 @@
+---
+title: "Climatic effects on seasonal willow ptarmigan survival"
+subtitle: "Analyses and results"
+author: "Lasse Eriksen et al."
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+dataset: Lierne ptarmigan project
+---
+\
+`r paste("Built with R", getRversion())`
+\
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale(locale='no_NB.utf8')
+
+library(RSQLite) # for SQL database operations
+library(tidyverse, warn = FALSE) # data science packages (dplyr, ggplot2, purrr, etc.)
+library(lubridate) # for working with dates
+library(gss) # for creating smooth hazard curves
+library(survival) # for survival analyses
+library(survminer) # for plotting survival curves
+library(coxme) # for mixed effects proportional hazards
+
+source("cause_survival_GROUSE.r")
+```
+
+# Introduction
+This document contains a walk-through of data management, statistical analyses and results of climatic effects on seasonal willow ptarmigan survival in Lierne (Norway) in the years 2015-2021. The analyses build upon the datasets 'd' (occurence data for individual willow ptarmigan), 'snow' (1x1 km gridded model-based snowdepth data from Met Norway) and 'nao' (winter NAO index from NCAR).\
+
+
+# Data management
+
+Importing data:
+```{r eval = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+### Importing individual-based ptarmigan data from SQL database
+con <- dbConnect(drv=RSQLite::SQLite(), dbname="P:/12179000_lirypetelemetri_i_lierne/DATA Lierne/Database/Lierne_WP_Project_Data_ReSt.db")
+capturedetails <- as_tibble(dbReadTable(con, "Marked_CaptureDetails")) %>%
+  dplyr::select(RingNR, Year, CaptureAge, Sex_fieldbased, Sex_dna, CaptureArea) %>%
+  filter(RingNR !="NA")
+occ <- as_tibble(dbReadTable(con, "Marked_Occurences")) %>% filter(!is.na(organismID))
+dbDisconnect(con) 
+
+capturedetails <- capturedetails[-which(duplicated(capturedetails$RingNR)), ] # removing duplicate records of capture details (age, sex) from recaptured birds
+
+capturedetails <- capturedetails %>% rename(CaptureYear = Year)
+
+d <- left_join(occ, capturedetails, by = "RingNR") # joining datasets
+
+### Removing redundant data
+d <- d %>% filter(Status != 7) # removing all the "searched for but not heard" entries
+d <- d %>% filter(CaptureArea != "Fiskløysdalen") # removing birds from the pilot in Fiskløysdalen
+
+### Assigning ptarmigan sex
+d_sex <- d # making a copy of the dataset to perform analyses of error in assumed sex
+d <- d %>% mutate(sex = ifelse(is.na(Sex_dna), Sex_fieldbased, Sex_dna)) # using DNA data when available
+
+### Selecting and arranging relevant data
+d <- d %>% dplyr::select(RingNR, Date, Year, CaptureYear, Zone, UTM_X, UTM_Y, Status, PosAccuracy,
+                         CaptureAge, CaptureArea, sex, occurenceID, organismID)
+
+d <- d %>% group_by(RingNR) %>%
+  mutate(Status = ifelse(Status == 1 & Year != CaptureYear, 2, Status)) # setting duplicated capture events   as alive recaptures
+
+d <- d %>%
+  rename(state = Status) %>%
+  mutate(event = ifelse(state == 1, "capture", "recapture")) %>%
+  mutate(state = recode(state, '1' = 'alive', '2' = 'alive', '3' = 'shot',
+                               '4' = 'predated', '5' = 'unknown death cause',
+                               '6' = 'recorded mortality')) %>%
+  mutate(age = if_else(CaptureAge == "ad", "ad",
+                       if_else(Year == CaptureYear, "juv", "ad"))) %>%  # setting age based on capture age
+  mutate(Date = as.Date(Date, format = "%d.%m.%Y")) %>% # setting date to survival function standard
+  mutate(week = week(Date)) %>%
+  arrange(RingNR, Date)
+
+#write.csv(d, file="./data/01_Data_Occurences.csv", row.names=F)
+```
+\
+
+```{r eval = TRUE, echo = TRUE}
+d <- read.csv("./data/01_Data_Occurences.csv")
+```
+\
+
+Creating CSV file with weekly average snowdepths for each coordinate, from snow data from Met Norway:
+```{r eval = FALSE, echo = TRUE}
+snow <- read.csv("./data/snowdepth.csv")
+snow <- snow %>% 
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d")) %>%
+  mutate(Year = year(Date), week = week(Date))
+week_avg_snow <- snow %>%
+  group_by(Coordinate, Year, week) %>%
+  summarise_at(vars(snow), list(snow=mean)) %>%
+  mutate(snow = round(snow,1))
+#write.csv(week_avg_snow, file="./data/week_avg_snow.csv", row.names=F)
+```
+\
+
+Creating CSV file with daily average snowdepths based on data from Met Norway, using location data data from all occasions in October for all years combined:
+```{r eval = FALSE, echo = TRUE, warning = FALSE, message = FALSE}
+autumnloc <- d %>% filter(month(Date) == 10) %>%
+  mutate(Coordinate = as.character(paste(UTM_X, "/", UTM_Y, sep = ""))) %>%
+  ungroup() %>%
+  dplyr::select(Coordinate) %>%
+  distinct()
+
+snow <- read.csv("./data/snowdepth.csv")
+snow <- snow %>% filter(month(Date) > 8)
+snow <- semi_join(snow, autumnloc)
+
+snow <- snow %>% group_by(Date) %>%
+  summarise_at(vars(snow), list(snow=mean)) %>%
+  mutate(snow = round(snow,1)) %>%
+  mutate(Year = year(Date), day = yday(Date))
+
+#ggplot(snow, aes(day, snow)) + geom_line(aes(colour = factor(Year)), linewidth = 2)
+ 
+winterstart <- snow %>%
+  filter(snow<1) %>% # setting threshold (in cm) of mean snow cover before considering the landscape as snow-covered
+  group_by(Year) %>%
+  summarise(winterstart = last(day)+1) # adding 1 to get first day with snow cover above the threshold
+
+#ggplot(winterstart, aes(Year+1, winterstart)) + geom_line()
+#write.csv(winterstart, file="./data/winterstart.csv", row.names=F)
+```
+\
+
+Descriptive statistics:
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# number of occasions in the dataset:
+n_occ <- nrow(d)
+
+# number of individuals in the dataset:
+s_size <- n_distinct(d$RingNR)
+
+# sample size by year
+s_size_year <- d %>% group_by(Year) %>%
+  summarise(Sample_size=n_distinct(RingNR))
+
+# sample size by capture location
+s_size_area <- d %>% filter(event == "capture") %>%
+  group_by(CaptureArea) %>% summarise(count=n())
+
+# age at time of capture
+s_size_age <- d %>% filter(event == "capture") %>%
+  group_by(age) %>% summarise(count=n())
+
+# sex distribution
+s_size_sex <- d %>% filter(event == "capture") %>%
+  group_by(sex) %>% summarise(count=n())
+
+# number of birds that were shot, predated, dead due to unknown causes, or where the transmitter sent records of mortality without retrieving the transmitter nor examining the carcass and death location:
+deaths <- d %>%
+  arrange(RingNR, Date) %>%
+  group_by(RingNR) %>%
+  mutate(end_state = last(state)) %>%
+  filter(end_state != "alive") %>%
+  group_by(RingNR, end_state) %>%
+  count() %>%
+  mutate(n=1) %>%
+  group_by(end_state) %>%
+  count()
+
+# error rate in estimating ptarmigan sex in the field vs DNA analyses (when available)
+error <- d_sex %>%
+  filter(!duplicated(RingNR)) %>%
+  mutate(error = ifelse(Sex_dna == Sex_fieldbased, 0, 1)) %>%
+  filter(!is.na(error)) %>%
+  summarise(count = round(sum(error)/length(error),3))
+
+# number of captured birds without DNA sample
+noDNA <- d_sex %>%
+  filter(!duplicated(RingNR)) %>%
+  filter(is.na(Sex_dna)) %>%
+  summarise(count=n())
+
+# estimate of precision in VHF triangulations, based on the difference between recorded mortalities (if multiple 'recorded mortality' observations, using last observation only) and locations where the transmitters were later found
+d_prec <- d %>%
+  filter(state != "alive") %>%
+  group_by(RingNR) %>%
+  distinct(state, .keep_all = TRUE) %>% # removing additional 'recorded mortality' observations
+  filter(n()>1) %>% # removing observations without 'recorded mortality' before the transmitter was found
+  slice_tail(n=2) %>%
+  distinct(UTM_X, UTM_Y, .keep_all = TRUE) %>% # removing any observations with identical coordinates
+  filter(n()>1) %>%
+  ungroup() %>%
+  dplyr::select(RingNR, UTM_X, UTM_Y)
+
+x1 <- d_prec %>% group_by(RingNR) %>% filter(row_number() == 1) %>% ungroup() %>% dplyr::select(-RingNR)
+x2 <- d_prec %>% group_by(RingNR) %>% filter(row_number() == 2) %>% ungroup() %>% dplyr::select(-RingNR)
+euc.dist <- function(x1, x2) sqrt(sum((x1 - x2) ^ 2))
+dist <- NULL
+for(i in 1:nrow(x1)) dist[i] <- euc.dist(x1[i,],x2[i,])
+
+paste("The dataset contains ", n_occ, " records of ", s_size, " individual birds (", s_size_sex[1,2], " females and ", s_size_sex[2,2], " males). At the time of capture, ", s_size_age[2,2], " individuals were young birds (i.e. from the previous year's production), and ", s_size_age[1,2], " were adults. ", s_size_area[1,2], " and ", s_size_area[2,2], " birds were captured at the Guslia and Lifjellet capture areas, respectively. Of the total sample, ", deaths[3,2], " individuals were shot during the harvest period, ", deaths[1,2], " were assumed predated after examining the carcass and death location, ", deaths[4,2], " were found dead where death cause could not clearly be attributed, and for ", deaths[2,2], " individuals mortality was recorded but the transmitter could not be retrieved. Sex was determined at the time of capture by observing sex characteristics, and later confirmed by use of DNA samples in all but ", noDNA, " cases. When not confirmed by DNA, sex was solely determined by observing sex characteristics. Error rate for field-based sex determination was ", round(error*100,1), " %, based on the ", s_size-noDNA, " birds where both methods applied. In ", nrow(x1), " cases, mortality signals was heard but where the transmitter was not found until a later field session. Based on the difference between estimated positions in these cases and the exact location the transmitters were later found, mean precision in VHF triangulations was estimated as ", round(mean(dist)/1000,1), " (SD: ", round(sd(dist)/1000,1), ") km.", sep="")
+```
+\
+
+Creating initial capture history (CH) for each bird:
+```{r echo = TRUE, warning = FALSE, message = FALSE}
+N_Ind <- d %>% count(RingNR) %>%
+          filter(n>1)
+
+Death_cause <- d %>% dplyr::select(RingNR, state, Date) %>%
+  arrange(RingNR, Date) %>%
+  filter(state == "shot" | state == "predated" | state == "unknown death cause" | state == "recorded mortality") %>%
+  group_by(RingNR) %>%
+  summarise(death = min(Date), cause = last(state)) %>%
+  dplyr::select(RingNR, cause)
+
+CH_first <- d %>% group_by(RingNR, Year) %>%
+  filter(event == "capture") %>%
+  summarise(Capture = min(Date))
+      
+CH_firstAlive <- d %>% group_by(RingNR, Year) %>%
+  filter(state == "alive") %>%
+  summarise(firstAlive = min(Date)) %>%
+  group_by(RingNR) %>%   # setting firstAlive at JAN 01 when observed alive in a previous year
+  mutate(firstAlive = ifelse(year(min(firstAlive)) == Year, as.character(firstAlive), paste(Year, "-01-01", sep=""))) %>%
+  mutate(firstAlive = as.Date(firstAlive, origin = as.Date("1970-01-01")))
+
+CH_lastAlive <- d %>%
+  group_by(RingNR) %>%
+  mutate(alive_until_shot = ifelse(last(state) == "shot", max(Date)-days(1), NA)) %>% # last alive set to the day before being shot
+  mutate(alive_until_shot = as.Date(alive_until_shot, origin = as.Date("1970-01-01"))) %>%
+  group_by(RingNR, Year, alive_until_shot) %>%
+  filter(state == "alive") %>%
+  summarise(LastAlive = max(Date)) %>%
+  group_by(RingNR) %>%   # setting lastAlive at DEC 31 when observed alive in a later year, or when shot in a later year, and setting lastAlive at the day before being shot if shot in the current year
+  mutate(LastAlive = ifelse(!is.na(alive_until_shot),
+                            ifelse(year(alive_until_shot) == Year,
+                                   as.character(alive_until_shot),
+                                   paste(Year, "-12-31", sep="")),
+                                   ifelse(year(max(LastAlive)) == Year,
+                                          as.character(LastAlive),
+                                          paste(Year, "-12-31", sep="")))) %>%
+  mutate(LastAlive = as.Date(LastAlive, origin = as.Date("1970-01-01"))) %>%
+  dplyr::select(-alive_until_shot)
+
+CH_dead <- d %>% group_by(RingNR, Year) %>%
+  filter(state != "alive") %>%
+  summarise(Dead = min(Date))
+
+CH <- full_join(CH_first, CH_firstAlive) %>%
+      full_join(., CH_lastAlive) %>%
+      full_join(., CH_dead) %>%
+      full_join(., Death_cause) %>%
+      right_join(., N_Ind)
+
+CH <- CH %>% # setting first and last alive dates in years when birds were shot but no live observations were recorded
+  mutate(firstAlive = ifelse(cause == "shot" & is.na(firstAlive), paste(Year, "-01-01", sep=""), as.character(firstAlive))) %>%
+  mutate(LastAlive = ifelse(cause == "shot" & is.na(LastAlive), as.character(Dead-days(1)), as.character(LastAlive))) %>%
+  mutate(firstAlive = as.Date(firstAlive, origin = as.Date("1970-01-01"))) %>%
+  mutate(LastAlive = as.Date(LastAlive, origin = as.Date("1970-01-01")))
+
+
+### Adding data for gap years (manually for now)
+# checking if there are any birds with gap years without live observations between capture and death:
+#test1 <- CH %>% arrange(RingNR, Year) %>% mutate(test = ifelse(RingNR == lead(RingNR), ifelse(Year == lead(Year-1), NA, "check"), NA))
+CH <- CH %>% ungroup() %>%
+  add_row(RingNR = c(4175772, 4175772, 4175772, 4175772, 4175757, 4281309, 4281382),
+          Year = c(2016, 2017, 2018, 2019, 2018, 2017, 2020),
+          Capture = NA,
+          firstAlive = as.Date(c("2016-01-01", "2017-01-01", "2018-01-01", "2019-01-01",
+                                 "2018-01-01", "2017-01-01", "2020-01-01")),
+          LastAlive = as.Date(c("2016-12-31", "2017-12-31", "2018-12-31", "2019-12-31",
+                                "2018-12-31", "2017-12-31", "2020-12-31")),
+          Dead = NA,
+          cause = c("recorded mortality", "recorded mortality", "recorded mortality",
+                    "recorded mortality", "shot", "shot", "shot"),
+          n = NA)
+
+CH <- CH %>% arrange(RingNR, Year)
+```
+\
+
+Adding yearly winter NAO (Dec-March) index values from NCAR (https://climatedataguide.ucar.edu/climate-data/hurrell-north-atlantic-oscillation-nao-index-station-based):
+```{r echo = TRUE, warning = FALSE, message = FALSE}
+NAO_DJFM <- data.frame(Year = 2015:2021, nao = c(3.56, 0.98, 1.47, 0.30, 2.09, 3.63, -0.38))
+# note: Dec is from year t-1, Jan-Mar is from year t
+CH <- left_join(CH, NAO_DJFM, by = "Year")
+```
+\
+
+Adding index values of the arrival time of winter the previous year, based on snowdepth data from Met Norway:
+```{r echo = TRUE}
+winterstart <- read.csv("./data/winterstart.csv")
+winterstart_previous_year <- winterstart %>%
+  rename(w_prev = winterstart) %>%
+  mutate(Year = Year+1)
+
+CH <- left_join(CH, winterstart_previous_year, by = "Year")
+```
+\
+
+Completing full-year weekly capture history for each bird:
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+Begin_week <- begin_yearly <- week(dmy("01-01-2015"))
+Censor_week <- censor_yearly <- week(dmy("31-12-2015"))
+
+CH <- CH %>% mutate(we_firstAlive=week(firstAlive), we_lastAlive=week(LastAlive), week_death=week(Dead)+1) %>% ### WHY +1???
+             mutate(Entry_temp=we_firstAlive,
+                    Exit_temp=ifelse(is.na(week_death), we_lastAlive,
+                                     ifelse(cause == "shot", week_death,
+                                            round((week_death+we_lastAlive)/2))))  %>%
+             mutate(event_temp=if_else(is.na(week_death), 0, 1)) %>%
+             mutate(cause_temp=if_else(event_temp==0, "censored", paste(cause))) 
+
+CH <-        CH %>% filter(!is.na(Entry_temp) & Year<2022) %>%
+             mutate(entry0=Entry_temp-Begin_week,
+                    exit0=if_else(Exit_temp>Censor_week, Censor_week-Begin_week, Exit_temp-Begin_week)) %>%
+             mutate(entry=if_else(entry0<1,1,entry0), exit=exit0+1) %>%
+             mutate(event=if_else(Exit_temp>Censor_week, 0, event_temp), cause_temp2=if_else(Exit_temp>Censor_week, "censored", cause_temp)) %>%
+             mutate(cause_spec=if_else(cause_temp2=="censored", 0, if_else(cause_temp2=="shot", 1, 2)))
+
+
+# Adding age and sex:
+AgeSex <- d %>% mutate(age=recode(age, "juv"=1, "ad"=2)) %>%
+          group_by(RingNR, Year, sex) %>%
+          summarise(age=min(age))
+
+CH <- left_join(CH, AgeSex)
+
+CH_fullyear <- CH # renaming the full-year capture history data frame
+```
+\
+
+```{r eval = FALSE}
+### NOT RUN ###
+
+### Creating periodical capture histories for SPRING, NOT WEEKLY
+Censor_week_s <- week(dmy("15-06-2015"))
+Begin_week_s <- week(dmy("15-03-2015"))
+
+CH_s <- CH %>% mutate(entry_s=Begin_week_s) %>%
+               mutate(exit_s=if_else(exit>Censor_week_s, Censor_week_s, exit)) %>%
+               mutate(event_s=if_else(exit>Censor_week_s, 0,event)) %>%
+               mutate(cause_spec=if_else(event_s==0, 0, cause_spec)) %>%
+               filter(entry_s<exit_s)
+
+
+### Creating periodical capture histories for AUTUMN
+Censor_week_a <- week(dmy("31-12-2015"))
+Begin_week_a <- week(dmy("01-09-2015"))
+
+CH_a <- CH %>% mutate(entry_a=Begin_week_a) %>%
+               mutate(exit_a=if_else(exit>Censor_week_a, Censor_week_a, exit)) %>%
+               mutate(event_a=if_else(exit>Censor_week_a, 0,event)) %>%
+               mutate(cause_spec=if_else(event_a==0, 0, cause_spec)) %>%
+               filter(entry_a<exit_a)
+```
+
+
+*Spring* - Creating seasonal capture histories per week with weekly snow data:
+```{r eval = TRUE, echo = TRUE, message = FALSE, warning = FALSE}
+Begin_week_s <- begin_spring <- week(dmy("15-03-2015"))
+Censor_week_s <- censor_spring <- week(dmy("15-06-2015"))
+
+CH_s <- CH %>% mutate(entry_s=Begin_week_s) %>%
+               mutate(exit_s=if_else(exit>Censor_week_s, Censor_week_s, exit)) %>%
+               mutate(event_s=if_else(exit>Censor_week_s, 0,event)) %>%
+               mutate(cause_spec=if_else(event_s==0, 0, cause_spec)) %>%
+               filter(entry_s<exit_s)
+
+# creating dataset with only relevant occasion data (i.e. from the weeks of the period in question):
+d_s <- d %>% filter(week >= Begin_week_s & week <= Censor_week_s)
+
+# using the relevant occasion data to find 'individuals x year' with actual location data (to enable linking with correct snow cover grid values):
+d_s_CH <- d_s %>% group_by(RingNR, Year) %>%
+                  filter(!duplicated(RingNR)) %>%
+                  dplyr::select(RingNR, Year)
+
+# for weekly CH, removing CH rows that has no observations (alive or dead) within the period in question:
+CH_sw <- inner_join(CH_s, d_s_CH)
+
+# making new rows in the dataset to create CH with 1 week intervals:
+CH_sw <- CH_sw %>% mutate(reps = exit_s-entry_s)
+CH_sw <- data.frame(lapply(CH_sw, rep, CH_sw$reps))
+
+# setting first row for each individual CH as entry week:
+CH_sw <- CH_sw %>%
+  mutate(entry_sw = ifelse(row_number() == 1, entry_s,
+                           ifelse(RingNR != lag(RingNR) | Year != lag(Year), entry_s, NA)))
+
+# setting entry week in each CH row as the week after the previous entry week for each individual:
+for (i in 1:nrow(CH_sw)){
+  CH_sw <- CH_sw %>% mutate(entry_sw = ifelse(!is.na(entry_sw), entry_sw, lag(entry_sw)+1))
+  }
+
+# setting exit week as the week after entry week, and assigning any event to only the last CH row for each individual:
+CH_sw <- CH_sw %>%
+  mutate(exit_sw = entry_sw+1) %>%
+  mutate(event_sw = ifelse(row_number() == nrow(CH_sw), event_s,
+                           ifelse(RingNR == lead(RingNR) & Year == lead(Year), 0, event_s)))
+
+
+### adding snow data from the first registered location, until a new observation is registered (afterwards, this location is used instead, and so on)
+
+# for mortality events, using the precise coordinates from when the transmitter was found (when available):
+d_temp <- d %>%
+  mutate(Coordinate = as.character(paste(UTM_X, "/", UTM_Y, sep = ""))) %>% # used for joining datasets
+  group_by(RingNR, Year) %>%
+  mutate(Coordinate = ifelse(state == "alive", Coordinate, last(Coordinate)))
+
+# adding mortality event coordinates:
+d_coord1 <- d_temp %>%
+  filter(state != "alive") %>%
+  dplyr::select(RingNR, Year, Coordinate) %>%
+  distinct() %>%
+  rename(mort_Coordinate = Coordinate)
+CH_sw <- left_join(CH_sw, d_coord1)
+
+# adding entry-week coordinates:
+d_coord2 <- d_temp %>%
+  dplyr::select(RingNR, Year, Coordinate, week) %>%
+  arrange(RingNR, Year, week) %>%
+  distinct() %>% # removing identical observations (from the same week in the same location)
+  group_by(RingNR, Year, week) %>%
+  filter(Coordinate == last(Coordinate)) %>% # keeping only last record when observed in different locations      during the same week (usually because the bird was found dead or on the nest later)
+  rename(entry_Coordinate = Coordinate, entry_sw = week)
+CH_sw <- left_join(CH_sw, d_coord2)
+
+# adding exit-week coordinate when no entry week or mortality coordinate exists:
+d_coord3 <- d_coord2 %>%
+  mutate(entry_sw = ifelse(entry_sw>Censor_week_s, Censor_week_s-1, entry_sw-1)) %>%
+  group_by(RingNR, Year, entry_sw) %>%
+  filter(entry_Coordinate == first(entry_Coordinate)) %>% # only the first record is relevant
+  distinct() %>%
+  rename(exit_Coordinate = entry_Coordinate)
+CH_sw <- left_join(CH_sw, d_coord3)
+
+CH_sw <- CH_sw %>%
+  mutate(Coordinate = ifelse(event_sw == 1, mort_Coordinate,
+                             ifelse(!is.na(entry_Coordinate), entry_Coordinate, exit_Coordinate))) %>%
+  dplyr::select(-mort_Coordinate, -entry_Coordinate, -exit_Coordinate)
+CH_sw <- CH_sw %>% arrange(RingNR, Year, entry_sw)
+
+# adding first registered coordinate in each CH for cases when this is empty:
+first.coord <- CH_sw %>%
+  group_by(RingNR, Year) %>%
+  filter(!is.na(Coordinate)) %>%
+  slice(1) %>%
+  dplyr::select(RingNR, Year, Coordinate)
+first.obs <- CH_sw %>%  # (note: first.obs always equals Begin_week if Begin_week is later than March)
+  group_by(RingNR, Year) %>%
+  slice(1) %>%
+  dplyr::select(RingNR, Year, entry_sw)
+first.coord2 <- full_join(first.coord, first.obs)
+first.coord2 <- first.coord2 %>% rename(first_Coordinate = Coordinate)
+
+CH_sw <- left_join(CH_sw, first.coord2)
+CH_sw <- CH_sw %>%
+  mutate(Coordinate = ifelse(!is.na(Coordinate), Coordinate, first_Coordinate)) %>%
+  dplyr::select(-first_Coordinate)
+
+# setting missing coordinates in each CH row as the same coordinate as in the previous week:
+for (i in 1:nrow(CH_sw)){
+  CH_sw <- CH_sw %>% mutate(Coordinate = ifelse(!is.na(Coordinate), Coordinate, lag(Coordinate)))
+  }
+
+# adding snow data for each location each individual was recorded in at a given time:
+week_avg_snow <- read.csv("./data/week_avg_snow.csv")
+week_avg_snow <- week_avg_snow %>% rename(exit_sw = week)
+
+CH_spring <- left_join(CH_sw, week_avg_snow)
+```
+\
+
+
+*Autumn* - Creating seasonal capture histories per week with weekly snow data:
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+Begin_week_s <- begin_autumn <- week(dmy("01-09-2015"))
+Censor_week_s <- censor_autumn <- week(dmy("15-12-2015"))
+
+CH_s <- CH %>% mutate(entry_s=Begin_week_s) %>%
+               mutate(exit_s=if_else(exit>Censor_week_s, Censor_week_s, exit)) %>%
+               mutate(event_s=if_else(exit>Censor_week_s, 0,event)) %>%
+               mutate(cause_spec=if_else(event_s==0, 0, cause_spec)) %>%
+               filter(entry_s<exit_s)
+
+# creating dataset with only relevant occasion data (i.e. from the weeks of the period in question):
+d_s <- d %>% filter(week >= Begin_week_s & week <= Censor_week_s)
+
+# using the relevant occasion data to find 'individuals x year' with actual location data (to enable linking with correct snow cover grid values):
+d_s_CH <- d_s %>% group_by(RingNR, Year) %>%
+                  filter(!duplicated(RingNR)) %>%
+                  dplyr::select(RingNR, Year)
+
+# for weekly CH, removing CH rows that has no observations (alive or dead) within the period in question:
+CH_sw <- inner_join(CH_s, d_s_CH)
+
+# making new rows in the dataset to create CH with 1 week intervals:
+CH_sw <- CH_sw %>% mutate(reps = exit_s-entry_s)
+CH_sw <- data.frame(lapply(CH_sw, rep, CH_sw$reps))
+
+# setting first row for each individual CH as entry week:
+CH_sw <- CH_sw %>%
+  mutate(entry_sw = ifelse(row_number() == 1, entry_s,
+                           ifelse(RingNR != lag(RingNR) | Year != lag(Year), entry_s, NA)))
+
+# setting entry week in each CH row as the week after the previous entry week for each individual:
+for (i in 1:nrow(CH_sw)){
+  CH_sw <- CH_sw %>% mutate(entry_sw = ifelse(!is.na(entry_sw), entry_sw, lag(entry_sw)+1))
+  }
+
+# setting exit week as the week after entry week, and assigning any event to only the last CH row for each individual:
+CH_sw <- CH_sw %>%
+  mutate(exit_sw = entry_sw+1) %>%
+  mutate(event_sw = ifelse(row_number() == nrow(CH_sw), event_s,
+                           ifelse(RingNR == lead(RingNR) & Year == lead(Year), 0, event_s)))
+
+
+### adding snow data from the first registered location, until a new observation is registered (afterwards, this location is used instead, and so on)
+
+# for mortality events, using the precise coordinates from when the transmitter was found (when available):
+d_temp <- d %>%
+  mutate(Coordinate = as.character(paste(UTM_X, "/", UTM_Y, sep = ""))) %>% # used for joining datasets
+  group_by(RingNR, Year) %>%
+  mutate(Coordinate = ifelse(state == "alive", Coordinate, last(Coordinate)))
+
+# adding mortality event coordinates:
+d_coord1 <- d_temp %>%
+  filter(state != "alive") %>%
+  dplyr::select(RingNR, Year, Coordinate) %>%
+  distinct() %>%
+  rename(mort_Coordinate = Coordinate)
+CH_sw <- left_join(CH_sw, d_coord1)
+
+# adding entry-week coordinates:
+d_coord2 <- d_temp %>%
+  dplyr::select(RingNR, Year, Coordinate, week) %>%
+  arrange(RingNR, Year, week) %>%
+  distinct() %>% # removing identical observations (from the same week in the same location)
+  group_by(RingNR, Year, week) %>%
+  filter(Coordinate == last(Coordinate)) %>% # keeping only last record when observed in different locations      during the same week (usually because the bird was found dead or on the nest later)
+  rename(entry_Coordinate = Coordinate, entry_sw = week)
+CH_sw <- left_join(CH_sw, d_coord2)
+
+# adding exit-week coordinate when no entry week or mortality coordinate exists:
+d_coord3 <- d_coord2 %>%
+  mutate(entry_sw = ifelse(entry_sw>Censor_week_s, Censor_week_s-1, entry_sw-1)) %>%
+  group_by(RingNR, Year, entry_sw) %>%
+  filter(entry_Coordinate == first(entry_Coordinate)) %>% # only the first record is relevant
+  distinct() %>%
+  rename(exit_Coordinate = entry_Coordinate)
+CH_sw <- left_join(CH_sw, d_coord3)
+
+CH_sw <- CH_sw %>%
+  mutate(Coordinate = ifelse(event_sw == 1, mort_Coordinate,
+                             ifelse(!is.na(entry_Coordinate), entry_Coordinate, exit_Coordinate))) %>%
+  dplyr::select(-mort_Coordinate, -entry_Coordinate, -exit_Coordinate)
+CH_sw <- CH_sw %>% arrange(RingNR, Year, entry_sw)
+
+# adding first registered coordinate in each CH for cases when this is empty:
+first.coord <- CH_sw %>%
+  group_by(RingNR, Year) %>%
+  filter(!is.na(Coordinate)) %>%
+  slice(1) %>%
+  dplyr::select(RingNR, Year, Coordinate)
+first.obs <- CH_sw %>%  # (note: first.obs always equals Begin_week if Begin_week is later than March)
+  group_by(RingNR, Year) %>%
+  slice(1) %>%
+  dplyr::select(RingNR, Year, entry_sw)
+first.coord2 <- full_join(first.coord, first.obs)
+first.coord2 <- first.coord2 %>% rename(first_Coordinate = Coordinate)
+
+CH_sw <- left_join(CH_sw, first.coord2)
+CH_sw <- CH_sw %>%
+  mutate(Coordinate = ifelse(!is.na(Coordinate), Coordinate, first_Coordinate)) %>%
+  dplyr::select(-first_Coordinate)
+
+# setting missing coordinates in each CH row as the same coordinate as in the previous week:
+for (i in 1:nrow(CH_sw)){
+  CH_sw <- CH_sw %>% mutate(Coordinate = ifelse(!is.na(Coordinate), Coordinate, lag(Coordinate)))
+  }
+
+# adding snow data for each location each individual was recorded in at a given time:
+week_avg_snow <- read.csv("./data/week_avg_snow.csv")
+week_avg_snow <- week_avg_snow %>% rename(exit_sw = week)
+CH_sw <- CH_sw %>% mutate(Coordinate = as.character(Coordinate))
+
+CH_autumn <- left_join(CH_sw, week_avg_snow)
+```
+\
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# Colorblind-friendly palette:
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# To use for fills, add: scale_fill_manual(values=cbPalette)
+# To use for line and point colors, add: scale_colour_manual(values=cbPalette)
+```
+
+
+
+# Yearly survival analyses
+
+Smooth hazard curve:
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+# sshzd estimates a smooth hazard curve using smoothing splines
+# then, hzdrate.sshzd evaluates that function to get time-specific hazard rates based on the function estimated with sshzd
+#---------------------------------------------------------#
+hz1 <- sshzd(Surv(exit, cause_spec == 2, entry) ~ exit, data = CH, alpha = 0.5) # Natural
+hz2 <- sshzd(Surv(exit, cause_spec == 1, entry) ~ exit, data = CH, alpha = 0.5) # Harvest
+hz3 <- sshzd(Surv(exit, cause_spec == 1 | cause_spec == 2, entry) ~ exit, data = CH, alpha = 0.5) # Both
+tt <- seq(1,53,leng=53) # number of time units (weeks)
+hh1 <- hzdrate.sshzd(hz1,tt)
+hh2 <- hzdrate.sshzd(hz2,tt)
+hh3 <- hzdrate.sshzd(hz3,tt)
+
+df <- data.frame(Time=rep(seq(1, 53),3),
+                 Risk=c(hh3, hh2, hh1),
+                 Factor=rep(c("1. Total", "2. Harvest", "3. Natural"), each=53))
+
+p1 <- ggplot(df, aes(x=Time, y=Risk, group=Factor, col=Factor, linetype = Factor)) +
+  xlab("Week") +
+  ylab("Mortality risk") + geom_line(aes(linetype = Factor), linewidth = 1)
+p1 + theme_minimal()
+```
+\
+
+Yearly survival model:
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+CH <- CH_fullyear %>%
+  mutate(Year = as.factor(Year), sex = as.factor(sex), age = as.factor(age))
+
+begin <- begin_yearly
+censor <- censor_yearly
+
+### Base survival model
+M1a <- survfit(Surv(entry, exit, event) ~ 1, data=CH)
+
+### Using the competing risk formulation to estimate NON-HARVEST mortality rate: 
+CH_cause <- CH %>% mutate(cause3=cause_spec, ent=entry)
+M1a_nonharv <- cause.survival(CH_cause, 2)	# digit 2 here because we want to estimate survival without 1 (which is shot birds)
+
+### Using the competing risk formulation to estimate HARVEST mortality rate: 
+CH_cause <- CH %>% mutate(cause3=cause_spec, ent=entry)
+M1a_harv <- cause.survival(CH_cause, 1)	# digit 1 here because we want to estimate survival without 2 (which is natural mortality)
+
+paste("Yearly survival probability was estimated at ", round(last(summary(M1a)$surv), 2), " (SE: ", round(last(summary(M1a)$std.err), 2), "). Using the competing risk formulation, natural survival (i.e. disregarding shot birds) was estimated at ", 1-round(last(M1a_nonharv$CIF),2), " (SE: ", round(as.numeric(last(M1a_nonharv$StdErr)),2), "), while harvest mortality was estimated at ", round(last(M1a_harv$CIF),2), " (SE: ", round(as.numeric(last(M1a_harv$StdErr)),2), ")", sep="")
+```
+\
+
+Plotting survival models with covariates:
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# Base model
+M1a <- survfit(Surv(entry, exit, event) ~ 1, data=CH)
+ggsurvplot(M1a, legend="none", 
+           xlab="Week of the year",
+           risk.table = T, 
+           tables.height = 0.2,
+           risk.table.fontsize=3,
+           tables.theme = theme_cleantable(),
+           tables.y.text = FALSE,
+           ggtheme = theme_bw(),
+           palette = c("olivedrab"))
+
+# Survival model with differences in survival between years
+M1b <- survfit(Surv(entry, exit, event) ~ Year, data=CH)
+ggsurvplot(M1b, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c(2015:2021),
+           legend.title = "Year")
+
+# Survival model with differences in survival between sexes
+M1c <- survfit(Surv(entry, exit, event) ~ sex, data=CH)
+ggsurvplot(M1c, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Female", "Male"),
+           legend.title = "Sex")
+
+# Survival model with differences in survival between age groups
+M1d <- survfit(Surv(entry, exit, event) ~ age, data=CH)
+ggsurvplot(M1d, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Yearling", "Adult"),
+           legend.title = "Age group")
+
+# Survival model with differences in survival between sex and age groups
+M1e <- survfit(Surv(entry, exit, event) ~ sex + age, data=CH)
+ggsurvplot(M1e, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Female yearling", "Female adult", "Male yearling", "Male adult"),
+           legend.title = "Sex and age group")
+```
+\
+
+```{r eval = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+### NOT RUN ###
+
+### Transforming the data to make stratification possible, as described by Heisey & Patterson (2006, J Wildl Mgmnt 70(6):1544-1555) and developed by Sandercock et al. (2011, J Anim Ecol 80(1):244-258) and Nilsen et al. (2020, Front Ecol Evol 8:34):
+temp1 <- CH								            	# making strata	for harvested birds
+temp1 <- transform(temp1,
+    event2=ifelse(cause_spec==1, 1,0))	# variable "event2"; 1 if "shot", 0 otherwise (i.e. alive/censored                                            or other causes of death))
+cause4 <- rep(1,n=length(temp1[1]))			# making variable "cause4"; a column containing only 1's 	
+temp1 <- cbind(temp1, cause4)						# merging dataset "temp1" and array "cause4"
+strata <- rep(1, n=length(temp1[1]))		# making variable strata (a column with only 1's) - representing the harvesting strata
+temp1 <- cbind(temp1, strata)						# merging dataset "temp1" with the new array "strata"	
+
+temp2 <- CH						            			# making non-harvest strata
+temp2 <- transform(temp2,
+    event2=ifelse(cause_spec==2, 1,0))	# variable "event2"; 1 if dead (non-harvest), 0 if alive/censored or shot
+cause4 <- rep(2,n=length(temp2[1]))
+temp2 <- cbind(temp2, cause4)
+strata <- rep(2, n=length(temp2[1]))
+temp2 <- cbind(temp2, strata)
+
+CH2 <- rbind(temp1, temp2)							# merging the two stratified data tables above
+CH2a <- CH2 %>% filter(cause4==2)       # creating a dataframe where harvest events are excluded
+```
+
+```{r eval = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+### NOT RUN ###
+
+#Testing for differences in survival between years, using Cox proportional hazard models
+summary(coxph(Surv(entry, exit, event2) ~ Year, data=CH2a))
+
+#Testing for differences in survival with covariates (i.e. accounting for differences in proportional hazards), using Cox proportional hazard mixed effects models. Year is included as a random effect to account for variation between years that is not related to what we study here (e.g. predation pressure).
+M1a.coxme <- coxme(Surv(entry, exit, event2) ~ (1|Year), data=CH2a)	 
+M1c.coxme <- coxme(Surv(entry, exit, event2) ~ sex + (1|Year), data=CH2a)	 
+M1d.coxme <- coxme(Surv(entry, exit, event2) ~ age + (1|Year), data=CH2a)
+M1e.coxme <- coxme(Surv(entry, exit, event2) ~ sex + age + (1|Year), data=CH2a)	 
+M1e.coxme.2 <- coxme(Surv(entry, exit, event2) ~ sex * age + (1|Year), data=CH2a)	 
+
+# Assessing proportional hazards assumption
+test1c <- cox.zph(M1c.coxme)
+test1d <- cox.zph(M1d.coxme)
+test1e <- cox.zph(M1e.coxme)
+test1e.2 <- cox.zph(M1e.coxme.2)
+
+# Model selection
+M_list <- list(M1a.coxme, M1c.coxme, M1d.coxme, M1e.coxme, M1e.coxme.2)
+temp <- as_tibble(AICcmodavg::aictab(M_list, modnames=c("Intercept only", "S(sex)", "S(age)", "S(sex + age)", "S(sex * age)"))) %>% 
+  dplyr::select(-LL, -ModelLik)
+knitr::kable(temp, digits=2)
+```
+
+
+
+# Spring survival analyses
+
+Survival model:
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+CH <- CH_spring %>%
+  mutate(entry = entry_sw, exit = exit_sw, event = event_sw) %>%
+  mutate(w_prev = w_prev-mean(w_prev)) %>% # centering the variable around zero by subtracting the mean of the variable
+  mutate(log.snowdepth = log(ifelse(snow < 1, 1, snow))) %>%
+  mutate(Year = as.factor(Year),
+         sex = as.factor(sex),
+         age = as.factor(age))
+# using log(snowdepth) as the effect of snow depth changes is assumed to be more important in more shallow snow than in deep snow
+# considering snowdepth < 1 cm as no snow-cover
+
+events <- CH %>% filter(event == 1) %>% nrow()
+
+begin <- begin_spring
+censor <- censor_spring
+
+# Base survival model
+M2a <- survfit(Surv(entry, exit, event) ~ 1, data=CH)
+
+paste("Overall probability to survive through the period was estimated at ", round(last(summary(M2a)$surv), 2), " (SE: ", round(last(summary(M2a)$std.err), 2), "). Number of mortality events in the period: ", events, sep="")
+```
+\
+
+```{r eval = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+### NOT RUN ###
+
+### Plotting survival models with covariates:
+
+# Survival model with differences in survival between years
+M2b <- survfit(Surv(entry, exit, event) ~ Year, data=CH)
+ggsurvplot(M2b, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c(2015:2021),
+           legend.title = "Year")
+
+# Survival model with differences in survival between sexes
+M2c <- survfit(Surv(entry, exit, event) ~ sex, data=CH)
+ggsurvplot(M2c, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Female", "Male"),
+           legend.title = "Sex")
+
+# Survival model with differences in survival between age groups
+M2d <- survfit(Surv(entry, exit, event) ~ age, data=CH)
+ggsurvplot(M2d, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Yearling", "Adult"),
+           legend.title = "Age group")
+
+# Survival model with differences in survival between sex and age groups
+M2e <- survfit(Surv(entry, exit, event) ~ sex + age, data=CH)
+ggsurvplot(M2e, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Female yearling", "Female adult", "Male yearling", "Male adult"),
+           legend.title = "Sex and age group")
+
+# Survival model with differences in survival under different nao conditions
+M2g <- survfit(Surv(entry, exit, event) ~ as.factor(nao), data=CH)
+lablist <- c(unique(CH$nao)); lablist <- sort(lablist)
+ggsurvplot(M2g, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           legend.labs = lablist,
+           palette = cbPalette,
+           legend.title = "NAO index value")
+
+# Survival model with differences in survival under different winter starts the previous year
+M2h <- survfit(Surv(entry, exit, event) ~ as.factor(w_prev), data=CH)
+lablist <- c(unique(CH$w_prev)); lablist <- round(sort(lablist), 0)
+ggsurvplot(M2h, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           legend.labs = lablist,
+           ppalette = cbPalette,
+           legend.title = "Arrival day of winter previous year")
+```
+
+Transforming the data to make stratification possible, as described by Heisey & Patterson (2006, J Wildl Mgmnt 70(6):1544-1555) and developed by Sandercock et al. (2011, J Anim Ecol 80(1):244-258) and Nilsen et al. (2020, Front Ecol Evol 8:34):
+```{r eval = TRUE, echo = TRUE, message = FALSE, warning = FALSE}
+temp1 <- CH								            	# making strata	for harvested birds
+temp1 <- transform(temp1,
+    event2 = ifelse(event_sw==1 & cause_spec==1, 1, 0))
+                                        # variable "event2"; 1 if "shot", 0 otherwise (i.e. alive/censored or other causes of death))
+cause4 <- rep(1, n=length(temp1[1]))		# making variable "cause4"; a column containing only 1's 	
+temp1 <- cbind(temp1, cause4)						# merging dataset "temp1" and array "cause4"
+strata <- rep(1, n=length(temp1[1]))		# making variable strata (a column with only 1's) - representing the harvesting strata
+temp1 <- cbind(temp1, strata)						# merging dataset "temp1" with the new array "strata"	
+
+temp2 <- CH						            			# making non-harvest strata
+temp2 <- transform(temp2,
+    event2 = ifelse(event_sw==1 & cause_spec==2, 1, 0))
+                                        # variable "event2"; 1 if dead (non-harvest), 0 if alive/censored or shot
+cause4 <- rep(2,n=length(temp2[1]))
+temp2 <- cbind(temp2, cause4)
+strata <- rep(2, n=length(temp2[1]))
+temp2 <- cbind(temp2, strata)
+
+CH2 <- rbind(temp1, temp2)							# merging the two stratified data tables above
+CH2a <- CH2 %>% filter(cause4==2)       # creating a dataframe where harvest events are excluded
+```
+\
+
+```{r eval = FALSE}
+### NOT RUN ###
+
+### Testing for differences in survival between years, using Cox proportional hazard models
+M2b.1.cox <- coxph(Surv(entry, exit, event2) ~ as.numeric(Year), data=CH2a)	  
+M2b.2.cox <- coxph(Surv(entry, exit, event2) ~ Year, data=CH2a)	  
+summary(M2b.1.cox); anova(M2b.1.cox)
+summary(M2b.2.cox); anova(M2b.2.cox)
+# clear year-effects, both as categorical and numeric (lower survival in later years), also a lot of variation
+cox.zph(M2b.1.cox)
+cox.zph(M2b.2.cox)
+# assessing proportional hazards assumption (ok)
+```
+
+
+Testing for differences in survival with covariates (i.e. accounting for differences in proportional hazards), using Cox proportional hazard mixed effects models. Year is included as a random effect to account for variation between years that is not related to what we study here (e.g. predation pressure).
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+M2a <- coxme(Surv(entry, exit, event2) ~ (1|Year), data=CH2a)	 
+M2b <- coxme(Surv(entry, exit, event2) ~ sex + (1|Year), data=CH2a)	 
+M2c <- coxme(Surv(entry, exit, event2) ~ age + (1|Year), data=CH2a)
+M2c.2 <- coxme(Surv(entry, exit, event2) ~ sex + age + (1|Year), data=CH2a)	 
+
+M2d <- coxme(Surv(entry, exit, event2) ~ log.snowdepth + (1|Year), data=CH2a)
+M2d.2 <- coxme(Surv(entry, exit, event2) ~ log.snowdepth + sex + (1|Year), data=CH2a)
+M2d.3 <- coxme(Surv(entry, exit, event2) ~ log.snowdepth + age + (1|Year), data=CH2a)
+
+M2e <- coxme(Surv(entry, exit, event2) ~ nao + (1|Year), data=CH2a)	 
+M2e.2 <- coxme(Surv(entry, exit, event2) ~ nao + sex + (1|Year), data=CH2a)	 
+M2e.3 <- coxme(Surv(entry, exit, event2) ~ nao + age + (1|Year), data=CH2a)	 
+
+M2f <- coxme(Surv(entry, exit, event2) ~ w_prev + (1|Year), data=CH2a)	 
+M2f.2 <- coxme(Surv(entry, exit, event2) ~ w_prev + sex + (1|Year), data=CH2a)
+M2f.3 <- coxme(Surv(entry, exit, event2) ~ w_prev + age + (1|Year), data=CH2a)
+```
+\
+
+Assessing proportional hazards assumption:
+```{r echo = TRUE}
+# If any variables violates assumption of proportional hazard, these are time-dependent coefficients (i.e. with very small p-values in the test), which should be taken care of
+
+test2b <- cox.zph(M2b) # sex
+test2c <- cox.zph(M2c) # age
+test2c.2 <- cox.zph(M2c.2) # sex + age
+
+test2d <- cox.zph(M2d) # snowdepth
+test2d.2 <- cox.zph(M2d.2) # snowdepth + sex
+test2d.3 <- cox.zph(M2d.3) # snowdepth + age
+
+test2e <- cox.zph(M2e) # nao
+test2e.2 <- cox.zph(M2e.2) # nao + sex
+test2e.3 <- cox.zph(M2e.3) # nao + age
+
+test2f <- cox.zph(M2f) # w_prev
+test2f.2 <- cox.zph(M2f.2) # w_prev + sex
+test2f.3 <- cox.zph(M2f.3) # w_prev + age
+
+paste("The proportional hazards assumption was met for all models (sex model: chi-square=", round(test2b$table[2],2), ", p=", round(test2b$table[6],2), "; age model: chi-square=", round(test2c$table[2],2), ", p=", round(test2c$table[6],2), "; sex + age model: chi-square=", round(test2c.2$table[3],2), ", p=", round(test2c.2$table[9],2), "; snowdepth model: chi-square=", round(test2d$table[2],2), ", p=", round(test2d$table[6],2), "; snowdepth + sex model: chi-square=", round(test2d.2$table[3],2), ", p=", round(test2d.2$table[9],2), "; snowdepth + age model: chi-square=", round(test2d.3$table[3],2), ", p=", round(test2d.3$table[9],2), "; NAO model: chi-square=", round(test2e$table[2],2), ", p=", round(test2e$table[6],2), "; NAO + sex model: chi-square=", round(test2e.2$table[3],2), ", p=", round(test2e.2$table[9],2), "; NAO + age model: chi-square=", round(test2e.3$table[3],2), ", p=", round(test2e.3$table[9],2), "; previous winter-arrival model: chi-square=", round(test2f$table[2],2), ", p=", round(test2f$table[6],2), "; previous winter-arrival + sex model: chi-square=", round(test2f.2$table[3],2), ", p=", round(test2f.2$table[9],2), "; previous winter-arrival + age model: chi-square=", round(test2f.3$table[3],2), ", p=", round(test2f.3$table[9],2), ".", sep="")
+```
+\
+
+Model selection:
+```{r echo = TRUE}
+M_list <- list(M2a, M2b, M2c, M2c.2, M2d, M2d.2, M2d.3, M2e, M2e.2, M2e.3, M2f, M2f.2, M2f.3)
+temp <- as_tibble(AICcmodavg::aictab(M_list, modnames = c(
+  "Intercept only", "S(sex)", "S(age)", "S(sex + age)",
+  "S(log.snowdepth)", "S(log.snowdepth + sex)", "S(log.snowdepth + age)",
+  "S(NAO)", "S(NAO + sex)", "S(NAO + age)",
+  "S(snow_arrival_prev)", "S(snow_arrival_prev + sex)", "S(snow_arrival_prev + age)"))) %>% 
+  dplyr::select(-LL, -ModelLik)
+knitr::kable(temp, digits=2)
+```
+\
+
+Plotting best models [NOT COMPLETE]:
+```{r}
+#predict(M2c, type = "risk")
+#summary(M2c) # age
+
+library(boot)
+func = function(data,idx){
+coef(coxme(Surv(entry, exit, event2) ~ age + (1|Year), data=data[idx,]))
+}
+set.seed(123)
+B = boot(CH2a,func,R=1000)
+
+B$t0 # original estimates
+head(B$t) # head of bootstrap estimates, one column for each variable
+boot.ci(B, index=1, conf = 0.95, type="norm") # bootstrap confidence intervals
+# CI: -1.0859, -0.1112
+
+# [IGNORING BOOTSTRAPS FOR NOW]
+
+### Using coef and SE for plotting:
+Age = c("yearling", "adult")
+#df <- data.frame(xAxis = length(Age):1, 
+#                 Hazard = c(exp(0), exp(-0.604814)),
+#                 lower = c(exp(0-1.96*0.2356158), exp(-0.604814-1.96*0.2356158)), # dataframe with SE for adults used for both categories
+#                 upper = c(exp(0+1.96*0.2356158), exp(-0.604814+1.96*0.2356158)))
+df <- data.frame(xAxis = length(Age):1, 
+                 Hazard = c(exp(0), exp(-0.604814)),
+                 lower = c(exp(0), exp(-0.604814-1.96*0.2356158)), 
+                 upper = c(exp(0), exp(-0.604814+1.96*0.2356158)))
+
+ggplot(df, aes(x = Age, y = Hazard)) + 
+  geom_errorbar(aes(ymax = upper, ymin = lower), linewidth = 1.5, width = 0.2, color = "grey50") +
+  geom_point(size = 3.5, color = "orangered") +
+  theme_ggeffects() +
+  labs(x = "Age", y = "Hazard") +
+  expand_limits(y = c(0, 1.5))
+```
+
+```{r}
+#predict(M2f.3, type = "risk")
+#summary(M2f.3) # w_prev + age
+
+library(boot)
+func = function(data,idx){
+coef(coxme(Surv(entry, exit, event2) ~ w_prev + age + (1|Year), data=data[idx,]))
+}
+set.seed(123)
+B = boot(CH2a,func,R=100) # note low R
+
+B$t0 # original estimates
+head(B$t) # head of bootstrap estimates, one column for each variable
+boot.ci(B, index=1, conf = 0.95, type="norm") # bootstrap confidence intervals
+
+#temp <- rnorm(100, mean = -0.02515073, sd = 0.0152075)
+#quantile(temp, probs = c(0.025, 0.975))
+#temp1 <- rnorm(100, mean = -0.64055860, sd = 0.2368418)
+#quantile(temp1, probs = c(0.025, 0.975))
+
+# [IGNORING BOOTSTRAPS FOR NOW]
+
+
+## multiplying by x causes problems
+newdata <- data.frame(time = rep(seq(min(CH2a$w_prev), max(CH2a$w_prev), 0.1), each = 2),
+                      age = rep(c("yearling", "adult")))
+newdata <- newdata %>%
+  mutate(hazard = ifelse(age == "yearling", exp(-0.02515073*time), exp(-0.02515073*time-0.64055860))) %>%
+  mutate(lower = ifelse(age == "yearling", exp((-0.02515073-1.96*0.0152075)*time), exp((-0.02515073-1.96*0.0152075)*time-0.64055860))) %>%
+  mutate(upper = ifelse(age == "yearling", exp((-0.02515073+1.96*0.0152075)*time), exp((-0.02515073+1.96*0.0152075)*time-0.64055860)))
+
+## bootstrapped CI, same problem
+#newdata <- data.frame(time = rep(seq(min(CH2a$w_prev), max(CH2a$w_prev), 0.1), each = 2),
+#                      age = rep(c("yearling", "adult")))
+#newdata <- newdata %>%
+#  mutate(hazard = ifelse(age == "yearling", exp(-0.02515073*time), exp(-0.02515073*time-0.64055860))) %>%
+#  mutate(lower = ifelse(age == "yearling", exp(-0.0448*time), exp(-0.0448*time-0.64055860))) %>%
+#  mutate(upper = ifelse(age == "yearling", exp(-0.0036*time), exp(-0.0036*time-0.64055860)))
+
+## wrong method (and seems like too wide confidence intervals):
+#newdata <- data.frame(time = rep(seq(min(CH2a$w_prev), max(CH2a$w_prev), 0.1), each = 2),
+#                      age = rep(c("yearling", "adult")))
+#newdata <- newdata %>%
+#  mutate(hazard = ifelse(age == "yearling", exp(-0.02515073*time), exp(-0.02515073*time-0.64055860))) %>%
+#  mutate(lower = hazard-exp(1.96*0.0152075)) %>%
+#  mutate(upper = hazard+exp(1.96*0.0152075))
+
+library(ggeffects)
+ggplot(newdata, aes(x = time, y = hazard, colour = age)) + # fill = age
+  geom_line(linewidth = 1.2) +
+  #geom_ribbon(aes(ymin = lower, ymax = upper), alpha = .05, linetype = 3) +
+  theme_ggeffects() +
+  #theme_bw() +
+  theme(axis.title.x = element_text(size=12)) +
+  theme(axis.title.y = element_text(size=12)) +
+  scale_colour_manual(name = "Age", values=c("darkslategray3", "burlywood3")) +
+  labs(x = "Arrival of winter previous year (days)", y = "Hazard ratio")
+```
+
+```{r}
+#summary(M2d.3) # log.snowdepth + age
+
+## testing same method (very wide confidence intervals):
+#newdata <- data.frame(snow = rep(seq(min(CH2a$log.snowdepth), max(CH2a$log.snowdepth), 0.05), each = 2),
+#                      age = rep(c("yearling", "adult")))
+#newdata <- newdata %>%
+#  mutate(hazard = ifelse(age == "yearling", exp(0.2196664*snow), exp(0.2196664*snow-0.5900741))) %>%
+#  mutate(lower = hazard-exp(1.96*0.1301910)) %>%
+#  mutate(upper = hazard+exp(1.96*0.1301910))
+
+newdata <- data.frame(snow = rep(seq(min(CH2a$log.snowdepth), max(CH2a$log.snowdepth), 0.05), each = 2),
+                      age = rep(c("yearling", "adult")))
+newdata <- newdata %>%
+  mutate(hazard = ifelse(age == "yearling", exp(0.2196664*snow), exp(0.2196664*snow-0.5900741))) %>%
+  mutate(lower = ifelse(age == "yearling", exp((0.2196664-1.96*0.1301910)*snow), exp((0.2196664-1.96*0.1301910)*snow-0.5900741))) %>%
+  mutate(upper = ifelse(age == "yearling", exp((0.2196664+1.96*0.1301910)*snow), exp((0.2196664+1.96*0.1301910)*snow-0.5900741)))
+
+ggplot(newdata, aes(x = snow, y = hazard, colour = age)) + # fill = age
+  geom_line(linewidth = 1.2) +
+  #geom_ribbon(aes(ymin = lower, ymax = upper), alpha = .05, linetype = 3) +
+  theme_ggeffects() +
+  scale_colour_manual(name = "Age", values=c("darkslategray3", "burlywood3")) +
+  labs(x = "log(snowdepth)", y = "Hazard ratio")
+```
+
+```{r}
+# summary(M2e.3) # nao + age
+
+## testing same method (very wide confidence intervals):
+newdata <- data.frame(nao = rep(seq(min(CH2a$nao), max(CH2a$nao), 0.05), each = 2),
+                      age = rep(c("yearling", "adult")))
+newdata <- newdata %>%
+  mutate(hazard = ifelse(age == "yearling", exp(-0.1908018*nao), exp(-0.1908018*nao-0.5936736))) %>%
+  mutate(lower = hazard-exp(1.96*0.1475591)) %>%
+  mutate(upper = hazard+exp(1.96*0.1475591))
+
+ggplot(newdata, aes(x = nao, y = hazard, colour = age)) + # fill = age
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = .05, linetype = 3) +
+  theme_ggeffects() +
+  scale_colour_manual(name = "Age", values=c("darkslategray3", "burlywood3")) +
+  labs(x = "NAO index value", y = "Hazard ratio")
+```
+\
+
+[TEMPORARY] Plotting cumulative hazard curves for the best models - note: no mixed effects, and categorized numeric variables
+```{r}
+CH2a_KM <- CH2a %>%
+  mutate(w_prev = ifelse(w_prev < mean(w_prev), 1, 2)) %>%
+  mutate(log.snowdepth = ifelse(log.snowdepth < mean(log.snowdepth), 1, 2)) %>%
+  mutate(nao = ifelse(nao < mean(nao), 1, 2))
+
+# Survival model with differences in survival between arrival of winter previous year and age groups
+M2f.3_KM <- survfit(Surv(entry, exit, event) ~ w_prev + age, data=CH2a_KM)
+ggsurvplot(M2f.3_KM, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           fun = "cumhaz",
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Early winter, yearling", "Early winter, adult", "Late winter, yearling", "Late winter, adult"),
+           legend.title = "")
+
+# Survival model with differences in survival between log(snowdepth) and age groups
+M2d.3_KM <- survfit(Surv(entry, exit, event) ~ log.snowdepth + age, data=CH2a_KM)
+ggsurvplot(M2d.3_KM, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           fun = "cumhaz",
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Less snow, yearling", "Less snow, adult", "More snow, yearling", "More snow, adult"),
+           legend.title = "")
+
+# Survival model with differences in survival between NAO index value and age groups
+M2e.3_KM <- survfit(Surv(entry, exit, event) ~ nao + age, data=CH2a_KM)
+ggsurvplot(M2e.3_KM, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           fun = "cumhaz",
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Low NAO, yearling", "Low NAO, adult", "High NAO, yearling", "High NAO, adult"),
+           legend.title = "")
+```
+
+
+
+
+Plotting model diagnostics for climatic variables, NAO estimates also split on seasons:
+```{r}
+#par(mfrow=c(1,3))
+#plot(cox.zph(M2f)); abline(h=M2f$coef, col="royalblue1", lty = 5)#; abline(h=0, col="darkred", lty = 3) # w_prev
+#plot(cox.zph(M2d)); abline(h=M2d$coef, col="royalblue1", lty = 5)#; abline(h=0, col="darkred", lty = 3) # snowdepth
+#plot(cox.zph(M2e)); abline(h=M2e$coef, col="royalblue1", lty = 5)#; abline(h=0, col="darkred", lty = 3) # nao
+#par(mfrow=c(1,1))
+
+# solid black line shows the estimated effect (beta) versus time, as estimated by cox.zph, with CI
+# dotted red line shows null value of beta (i.e. "no effect")
+# dashed blue line shows model coefficient (i.e. estimated average hazard over the entire period)
+
+## The models with 'nao' seem to change angle between week 14 and 15
+
+## Testing for differences in survival with covariates, split into time steps indicated by the intial models:
+M2e_early <- coxme(Surv(entry, exit, event2*(entry<15)) ~ nao + (1|Year), data=CH2a)
+M2e_late <- coxme(Surv(entry, exit, event2*(entry>14)) ~ nao + (1|Year), data=CH2a)	
+
+#summary(M2e_early)
+#summary(M2e_late)
+
+par(mfrow=c(1,3))
+plot(cox.zph(M2f)); abline(h=M2f$coef, col="royalblue1", lty = 5) # w_prev
+plot(cox.zph(M2d)); abline(h=M2d$coef, col="royalblue1", lty = 5) # snowdepth
+plot(cox.zph(M2e)); abline(h=M2e$coef, col="royalblue1", lty = 5)
+clip(0, 0.05, -10, 10)
+abline(h=-0.256, col="darkred", lwd = 3) # nao
+clip(0.1, 0.21, -10, 10)
+abline(h=-0.153, col="darkred", lwd = 3) # nao
+par(mfrow=c(1,1))
+```
+\
+
+
+
+# Autumn survival analyses
+
+Survival model:
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+CH <- CH_autumn %>%
+  mutate(entry = entry_sw, exit = exit_sw, event = event_sw) %>% 
+  mutate(snowcover = ifelse(snow > 1, 1, 0)) %>%
+  mutate(Year = as.factor(Year),
+         sex = as.factor(sex),
+         age = as.factor(age),
+         snowcover = as.factor(snowcover))
+# using 1 cm as a threshold for whether the ground is considered snow-covered or not
+
+events <- CH %>% filter(event == 1) %>% nrow()
+
+begin <- begin_autumn
+censor <- censor_autumn
+
+### Base survival model
+M3a <- survfit(Surv(entry, exit, event) ~ 1, data=CH)
+
+paste("Overall probability to survive through the period was estimated at ", round(last(summary(M3a)$surv), 2), " (SE: ", round(last(summary(M3a)$std.err), 2), "). Number of mortality events in the period, including shot birds: ", events, sep="")
+```
+\
+
+```{r eval = FALSE, echo = FALSE, message = FALSE, warning = FALSE}
+### NOT RUN ###
+
+### Plotting survival models with covariates:
+
+# Survival model with differences in survival between years
+M3b <- survfit(Surv(entry, exit, event) ~ Year, data=CH)
+ggsurvplot(M3b, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c(2015:2021),
+           legend.title = "Year")
+
+# Survival model with differences in survival between sexes
+M3c <- survfit(Surv(entry, exit, event) ~ sex, data=CH)
+ggsurvplot(M3c, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Female", "Male"),
+           legend.title = "Sex")
+
+# Survival model with differences in survival between age groups
+M3d <- survfit(Surv(entry, exit, event) ~ age, data=CH)
+ggsurvplot(M3d, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("Yearling", "Adult"),
+           legend.title = "Age group")
+
+# Survival model with differences in survival between sex and age groups
+M3e <- survfit(Surv(entry, exit, event) ~ sex + age, data=CH)
+ggsurvplot(M3e, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           palette = cbPalette,
+           legend.labs = c("Female yearling", "Female adult", "Male yearling", "Male adult"),
+           legend.title = "Sex and age group")
+
+# Survival model with differences in survival between snow-cover or not
+M3f <- survfit(Surv(entry, exit, event) ~ snowcover, data=CH)
+ggsurvplot(M3f, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = TRUE,
+           xlab="Week of the year",
+           palette = c("burlywood3", "darkslategray3"),
+           legend.labs = c("No", "Yes"),
+           legend.title = "Snow-covered ground")
+
+# Survival model with differences in survival between snow-cover and sex
+M3g <- survfit(Surv(entry, exit, event) ~ snowcover + sex, data=CH)
+ggsurvplot(M3g, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           legend.labs = c("No snow, female", "No snow, male", "Snow, female", "Snow, male"),
+           palette = cbPalette,
+           legend.title = "Snow-cover and sex")
+
+# Survival model with differences in survival between snow-cover and age group
+M2h<- survfit(Surv(entry, exit, event) ~ snowcover + age, data=CH)
+ggsurvplot(M2h, ggtheme = theme_bw(), linetype = "strata", censor.shape = "|", censor.size = 4, xlim = c(begin,censor), font.x = 14, font.y = 14, break.time.by = 2,
+           conf.int = FALSE,
+           xlab="Week of the year",
+           legend.labs = c("No snow, yearling", "No snow, adult", "Snow, yearling", "Snow, adult"),
+           palette = cbPalette,
+           legend.title = "Snow-cover and age")
+```
+
+Transforming the data to make stratification possible [re-running chunk]
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+temp1 <- CH								            	# making strata	for harvested birds
+temp1 <- transform(temp1,
+    event2 = ifelse(event_sw==1 & cause_spec==1, 1, 0))
+                                        # variable "event2"; 1 if "shot", 0 otherwise (i.e. alive/censored or other causes of death))
+cause4 <- rep(1, n=length(temp1[1]))		# making variable "cause4"; a column containing only 1's 	
+temp1 <- cbind(temp1, cause4)						# merging dataset "temp1" and array "cause4"
+strata <- rep(1, n=length(temp1[1]))		# making variable strata (a column with only 1's) - representing the harvesting strata
+temp1 <- cbind(temp1, strata)						# merging dataset "temp1" with the new array "strata"	
+
+temp2 <- CH						            			# making non-harvest strata
+temp2 <- transform(temp2,
+    event2 = ifelse(event_sw==1 & cause_spec==2, 1, 0))
+                                        # variable "event2"; 1 if dead (non-harvest), 0 if alive/censored or shot
+cause4 <- rep(2,n=length(temp2[1]))
+temp2 <- cbind(temp2, cause4)
+strata <- rep(2, n=length(temp2[1]))
+temp2 <- cbind(temp2, strata)
+
+CH2 <- rbind(temp1, temp2)							# merging the two stratified data tables above
+CH2a <- CH2 %>% filter(cause4==2)       # creating a dataframe where harvest events are excluded
+```
+\
+
+```{r eval = FALSE}
+### NOT RUN ###
+
+### Testing for differences in survival between years, using Cox proportional hazard models
+M3b.1.cox <- coxph(Surv(entry, exit, event2) ~ as.numeric(Year), data=CH2a)	  
+M3b.2.cox <- coxph(Surv(entry, exit, event2) ~ Year, data=CH2a)    # non-convergence
+
+summary(M3b.1.cox); anova(M3b.1.cox)
+# not very clear year-effects, but a lot of variation
+cox.zph(M3b.1.cox)
+# assessing proportional hazards assumption (ok)
+```
+
+Testing for differences in survival with covariates (i.e. accounting for differences in proportional hazards), using Cox proportional hazard mixed effects models. Year is included as a random effect to account for variation between years that is not related to what we study here (e.g. predation pressure).
+```{r echo = TRUE, message = FALSE, warning = FALSE}
+
+M3a <- coxme(Surv(entry, exit, event2) ~ (1|Year), data=CH2a)	 
+M3b <- coxme(Surv(entry, exit, event2) ~ sex + (1|Year), data=CH2a)	 
+M3c <- coxme(Surv(entry, exit, event2) ~ age + (1|Year), data=CH2a)
+M3c.2 <- coxme(Surv(entry, exit, event2) ~ sex + age + (1|Year), data=CH2a)	 
+M3d <- coxme(Surv(entry, exit, event2) ~ snowcover + (1|Year), data=CH2a)
+M3d.2 <- coxme(Surv(entry, exit, event2) ~ snowcover + sex + (1|Year), data=CH2a)
+M3d.3 <- coxme(Surv(entry, exit, event2) ~ snowcover + age + (1|Year), data=CH2a)
+```
+\
+
+Assessing proportional hazards assumption:
+```{r}
+test3b <- cox.zph(M3b) # sex
+test3c <- cox.zph(M3c) # age
+test3c.2 <- cox.zph(M3c.2) # sex + age
+test3d <- cox.zph(M3d) # snow-cover
+test3d.2 <- cox.zph(M3d.2) # snow-cover + sex
+test3d.3 <- cox.zph(M3d.3) # snow-cover + age
+
+paste("The proportional hazards assumption was met for all models (sex model: chi-square=", round(test3b$table[2],2), ", p=", round(test3b$table[6],2), "; age model: chi-square=", round(test3c$table[2],2), ", p=", round(test3c$table[6],2), "; sex + age model: chi-square=", round(test3c.2$table[3],2), ", p=", round(test3c.2$table[9],2), "; snow-cover model: chi-square=", round(test3d$table[2],2), ", p=", round(test3d$table[6],2), "; snow-cover + sex model: chi-square=", round(test3d.2$table[3],2), ", p=", round(test3d.2$table[9],2), "; snow-cover + age model: chi-square=", round(test3d.3$table[3],2), ", p=", round(test3d.3$table[9],2), ".", sep="")
+```
+\
+
+Model selection:
+```{r echo = TRUE}
+M_list <- list(M3a, M3b, M3c, M3c.2, M3d, M3d.2, M3d.3)
+temp <- as_tibble(AICcmodavg::aictab(M_list, modnames = c(
+  "Intercept only", "S(sex)", "S(age)", "S(sex + age)",
+  "S(snow-cover)", "S(snow-cover + sex)", "S(snow-cover + age)"
+  ))) %>% 
+  dplyr::select(-LL, -ModelLik)
+knitr::kable(temp, digits=2)
+```
+\
+
+Plotting best models [NOT COMPLETE]:
+```{r}
+### Using coefs and SE for plotting
+
+### M3c.2 <- coxme(Surv(entry, exit, event2) ~ sex + age + (1|Year), data=CH2a)	 
+#summary(M3c.2)
+df <- data.frame(Sex = c("Female", "Female", "Male", "Male"),
+                 Age = c("Yearling", "Adult", "Yearling", "Adult"),
+                 Hazard = c(exp(0), exp(0.9225105), exp(1.0946813), (exp(1.0946813)+exp(0.9225105))),
+                 lower = c(exp(0), exp(0.9225105-1.96*0.6337040), exp(1.0946813-1.96*0.5151716), (exp(1.0946813-1.96*0.5151716)-exp(0.9225105-1.96*0.6337040))), 
+                 upper = c(exp(0), exp(0.9225105+1.96*0.6337040), exp(1.0946813+1.96*0.5151716), (exp(1.0946813+1.96*0.5151716)+exp(0.9225105+1.96*0.6337040))))
+
+ggplot(df, aes(x = Sex, y = Hazard)) + 
+  #geom_boxplot(aes(ymin = lower, lower = lower, middle = Hazard, ymax = upper, upper = upper), stat = "identity") +
+  geom_errorbar(aes(ymax = upper, ymin = lower), linewidth = 1.5, width = 0.2, color = "grey50") +
+  geom_point(size = 3.5, color = "orangered") +
+  facet_wrap(~Age, scales = "free_x", nrow = 1, strip.position = "bottom") +
+  theme_bw() +
+  theme(panel.spacing = unit(0, "lines"),
+        panel.border = element_rect(fill = NA),
+        strip.background = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        strip.placement = "outside") +
+  expand_limits(y = c(0, NA))
+
+
+### M3b <- coxme(Surv(entry, exit, event2) ~ sex + (1|Year), data=CH2a)	 
+#summary(M3b)
+Sex = c("Female", "Male")
+df <- data.frame(xAxis = length(Sex):1, 
+                 Hazard = c(exp(0), exp(1.151001)),
+                 lower = c(exp(0), exp(1.151001-1.96*0.5159674)), 
+                 upper = c(exp(0), exp(1.151001+1.96*0.5159674)))
+
+ggplot(df, aes(x = Sex, y = Hazard)) + 
+  geom_errorbar(aes(ymax = upper, ymin = lower), linewidth = 1.5, width = 0.2, color = "grey50") +
+  geom_point(size = 3.5, color = "orangered") +
+  theme_bw() +
+  labs(x = "Sex", y = "Hazard") +
+  expand_limits(y = c(0, NA))
+
+
+### M3d.2 <- coxme(Surv(entry, exit, event2) ~ snowcover + sex + (1|Year), data=CH2a)
+#summary(M3d.2)
+df <- data.frame(snowcover = c("No snow", "No snow", "Snow-covered ground", "Snow-covered ground"),
+                 Sex = c("Female", "Male", "Female", "Male"),
+                 Hazard = c(exp(0), exp(1.1519114), exp(-0.8417577), (exp(-0.8417577)+exp(1.1519114))),
+                 lower = c(exp(0), exp(1.1519114-1.96*0.5163714), exp(-0.8417577-1.96*0.6924143), (exp(-0.8417577-1.96*0.6924143)-exp(1.1519114-1.96*0.5163714))), 
+                 upper = c(exp(0), exp(1.1519114+1.96*0.5163714), exp(-0.8417577+1.96*0.6924143), (exp(-0.8417577+1.96*0.6924143)+exp(1.1519114+1.96*0.5163714))))
+
+ggplot(df, aes(x = snowcover, y = Hazard)) + 
+  geom_errorbar(aes(ymax = upper, ymin = lower), linewidth = 1.5, width = 0.2, color = "grey50") +
+  geom_point(size = 3.5, color = "orangered") +
+  facet_wrap(~Sex, scales = "free_x", nrow = 1, strip.position = "bottom") +
+  theme_bw() +
+  theme(panel.spacing = unit(0, "lines"),
+        panel.border = element_rect(fill = NA),
+        strip.background = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        strip.placement = "outside") +
+  expand_limits(y = c(0, NA))
+
+```
+\
+
+Plotting model diagnostics for climatic variables:
+```{r}
+plot(cox.zph(M3d)); abline(h=M3d$coef, col="royalblue1", lty = 5)#; abline(h=0, col="darkred", lty = 3) # snow-cover
+
+# solid black line shows the estimated effect (beta) versus time, as estimated by cox.zph, with CI
+# dotted red line shows null value of beta (i.e. "no effect")
+# dashed blue line shows model coefficient (i.e. estimated average hazard over the entire period)
+
+paste("Model diagnostics plot reveal no particular climatic patterns. The last event of natural mortality in the period is in week 45.")
+```
+
+
+
+ggsave("output.tiff", plot = last_plot(), device = "tiff", path = "./figs", scale = 2, width = 10, height = 10, units = "cm", dpi = 600, limitsize = TRUE)
+
+# end
